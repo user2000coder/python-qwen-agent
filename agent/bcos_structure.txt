@@ -1,0 +1,66 @@
+.
+├── ./README.md
+├── ./__pycache__
+│   ├── ./__pycache__/agent.cpython-312.pyc
+│   ├── ./__pycache__/config.cpython-312.pyc
+│   ├── ./__pycache__/council.cpython-312.pyc
+│   ├── ./__pycache__/llm.cpython-312.pyc
+│   ├── ./__pycache__/memory.cpython-312.pyc
+│   ├── ./__pycache__/planner.cpython-312.pyc
+│   └── ./__pycache__/protocol.cpython-312.pyc
+├── ./add_council.py
+├── ./agent
+│   └── ./agent/agents
+│       ├── ./agent/agents/__init__.py
+│       ├── ./agent/agents/critic_agent.py
+│       ├── ./agent/agents/evidence_agent.py
+│       ├── ./agent/agents/fact_agent.py
+│       ├── ./agent/agents/judge_agent.py
+│       └── ./agent/agents/reasoning_agent.py
+├── ./agent.py
+├── ./agents
+│   ├── ./agents/__init__.py
+│   ├── ./agents/__pycache__
+│   │   ├── ./agents/__pycache__/__init__.cpython-312.pyc
+│   │   ├── ./agents/__pycache__/critic_agent.cpython-312.pyc
+│   │   ├── ./agents/__pycache__/evidence_agent.cpython-312.pyc
+│   │   ├── ./agents/__pycache__/fact_agent.cpython-312.pyc
+│   │   ├── ./agents/__pycache__/judge_agent.cpython-312.pyc
+│   │   └── ./agents/__pycache__/reasoning_agent.cpython-312.pyc
+│   ├── ./agents/critic_agent.py
+│   ├── ./agents/evidence_agent.py
+│   ├── ./agents/fact_agent.py
+│   ├── ./agents/judge_agent.py
+│   └── ./agents/reasoning_agent.py
+├── ./bcos_structure.txt
+├── ./cache
+├── ./config.py
+├── ./council.py
+├── ./data
+├── ./history
+│   └── ./history/conversation.json
+├── ./llm.py
+├── ./logs
+│   └── ./logs/agent.log
+├── ./main.py
+├── ./memory.py
+├── ./planner.py
+├── ./prompts
+│   ├── ./prompts/bcos.txt
+│   └── ./prompts/planner.txt
+├── ./protocol.py
+├── ./requirements.txt
+├── ./test_search.py
+└── ./tools
+    ├── ./tools/__init__.py
+    ├── ./tools/__pycache__
+    │   ├── ./tools/__pycache__/__init__.cpython-312.pyc
+    │   ├── ./tools/__pycache__/calculator.cpython-312.pyc
+    │   ├── ./tools/__pycache__/file.cpython-312.pyc
+    │   └── ./tools/__pycache__/search.cpython-312.pyc
+    ├── ./tools/calculator.py
+    ├── ./tools/file.py
+    ├── ./tools/python.py
+    └── ./tools/search.py
+
+13 directories, 51 files

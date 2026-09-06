@@ -1,0 +1,19 @@
+# ==========================
+# BCOS Agent Dependencies
+# ==========================
+
+
+# Ollama Python Client
+ollama
+
+
+# Web Search
+ddgs
+
+
+# Environment
+python-dotenv
+
+
+# HTTP
+requests
