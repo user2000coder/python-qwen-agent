@@ -1,12 +1,17 @@
 """
 BCOS Agent Core
 
-Pipeline:
+Architecture
+------------
 
 User
   ↓
+Understand
+  ↓
 Planner
   ↓
+Task Lock
+  │
   ├── ANSWER
   │      └── Direct LLM
   │
@@ -14,10 +19,22 @@ Planner
   │      └── Deterministic Tool
   │
   ├── SEARCH
-  │      └── Search Tool → Evidence Synthesis
+  │      └── Search
+  │             ↓
+  │        Evidence Verifier
+  │             ↓
+  │        Deterministic Decision
+  │             ↓
+  │        Final Answer
   │
   ├── FILE
-  │      └── File Tool → Evidence Synthesis
+  │      └── File
+  │             ↓
+  │        Evidence Verifier
+  │             ↓
+  │        Deterministic Decision
+  │             ↓
+  │        Final Answer
   │
   └── COMPLEX
          └── Evidence Decomposition
@@ -30,19 +47,31 @@ Planner
                 ↓
                Judge
 
-Design goals:
-- Deterministic tools remain deterministic.
-- Search/File use evidence synthesis.
-- Complex tasks collect targeted evidence first.
-- Important claims should have an evidence path.
-- Observable trace is available.
-- Raw evidence can be inspected.
-- Tool parameters are validated.
-- Existing tool APIs remain unchanged.
+Important design rule
+---------------------
 
-Important:
-The trace records observable processing states,
-evidence, decisions and outputs.
+EvidenceVerifier is authoritative about whether retrieved
+evidence supports or contradicts a claim.
+
+Qwen is NOT allowed to override:
+
+    SUPPORTED
+    CONTRADICTED
+
+Qwen is only used for:
+
+    - direct ANSWER tasks
+    - ambiguous evidence classification
+    - conflict synthesis
+    - insufficient-evidence wording
+
+Observable trace records:
+
+    - task classification
+    - tool routing
+    - evidence acquisition
+    - verification result
+    - final decision
 
 It does NOT expose private model chain-of-thought.
 """
@@ -54,6 +83,7 @@ from planner import Planner
 from memory import Memory
 from protocol import Action
 from council import Council
+from evidence_verifier import EvidenceVerifier
 
 from tools.search import SearchTool
 from tools.calculator import CalculatorTool
@@ -62,12 +92,35 @@ from tools.file import FileTool
 
 class Agent:
 
+    # =========================================================
+    # INIT
+    # =========================================================
+
     def __init__(self):
 
         self.llm = LLM()
+
         self.memory = Memory()
-        self.planner = Planner(self.llm)
-        self.council = Council(self.llm)
+
+        self.planner = Planner(
+            self.llm
+        )
+
+        self.council = Council(
+            self.llm
+        )
+
+        # -----------------------------------------------------
+        # Evidence verifier
+        # -----------------------------------------------------
+
+        self.evidence_verifier = EvidenceVerifier(
+            self.llm
+        )
+
+        # -----------------------------------------------------
+        # Tools
+        # -----------------------------------------------------
 
         self.tools = {
             Action.SEARCH: SearchTool(),
@@ -81,16 +134,17 @@ class Agent:
             Action.FILE: ["path"],
         }
 
-        # =================================================
-        # OBSERVABLE TRACE
-        # =================================================
+        # -----------------------------------------------------
+        # Observable trace
+        # -----------------------------------------------------
 
         self.trace_enabled = True
+
         self.trace_events = []
 
-    # =====================================================
+    # =========================================================
     # TRACE
-    # =====================================================
+    # =========================================================
 
     def trace(
         self,
@@ -100,7 +154,7 @@ class Agent:
         data=None
     ):
         """
-        Record an observable processing state.
+        Record observable processing state.
 
         This is not private chain-of-thought.
         """
@@ -114,14 +168,15 @@ class Agent:
         if data is not None:
             event["data"] = data
 
-        self.trace_events.append(event)
+        self.trace_events.append(
+            event
+        )
 
         if not self.trace_enabled:
             return
 
         print(
-            "\n"
-            "┌──────────────────────────────────────────────┐",
+            "\n┌──────────────────────────────────────────────┐",
             flush=True
         )
 
@@ -135,7 +190,10 @@ class Agent:
             flush=True
         )
 
-        for line in str(message).splitlines():
+        for line in str(
+            message
+        ).splitlines():
+
             print(
                 f"│ {line}",
                 flush=True
@@ -161,7 +219,9 @@ class Agent:
 
             else:
 
-                text = str(data)
+                text = str(
+                    data
+                )
 
             for line in text.splitlines():
 
@@ -176,35 +236,32 @@ class Agent:
         )
 
     def reset_trace(self):
-        """
-        Reset trace for a new request.
-        """
 
         self.trace_events = []
 
     def get_trace(self):
-        """
-        Return structured trace.
-        """
 
         return list(
             self.trace_events
         )
 
-    # =====================================================
-    # MAIN ASK
-    # =====================================================
+    # =========================================================
+    # ASK
+    # =========================================================
 
     def ask(
         self,
         question
     ):
+        """
+        Main BCOS request pipeline.
+        """
 
         self.reset_trace()
 
-        # -------------------------------------------------
+        # -----------------------------------------------------
         # MEMORY
-        # -------------------------------------------------
+        # -----------------------------------------------------
 
         self.memory.add(
             "user",
@@ -215,9 +272,9 @@ class Agent:
 
         evidence = []
 
-        # =================================================
+        # =====================================================
         # 01 — UNDERSTAND
-        # =================================================
+        # =====================================================
 
         self.trace(
             1,
@@ -228,9 +285,9 @@ class Agent:
             }
         )
 
-        # =================================================
+        # =====================================================
         # 02 — CLASSIFY
-        # =================================================
+        # =====================================================
 
         print(
             "\n🧠 Planner: phân tích...",
@@ -257,400 +314,29 @@ class Agent:
             flush=True
         )
 
-        # =================================================
+        # =====================================================
         # ANSWER
-        # =================================================
+        # =====================================================
 
         if call.action == Action.ANSWER:
 
-            self.trace(
-                3,
-                "TASK LOCK",
-                "Task được route sang ANSWER → Direct LLM."
-            )
-
-            print(
-                "💬 Direct answer...",
-                flush=True
-            )
-
-            answer = self.llm.chat(
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Trả lời câu hỏi của người dùng "
-                            "một cách chính xác và trực tiếp. "
-                            "Nếu không chắc chắn, hãy nói rõ."
-                        )
-                    },
-                    {
-                        "role": "user",
-                        "content": question
-                    }
-                ]
-            )
-
-            self.trace(
-                4,
-                "FINAL ANSWER",
-                "Direct LLM đã tạo câu trả lời."
-            )
-
-            yield answer
-
-            self.memory.add(
-                "assistant",
-                answer
-            )
-
-            return
-
-        # =================================================
-        # COMPLEX
-        # =================================================
-
-        if call.action == Action.COMPLEX:
-
-            self.trace(
-                3,
-                "TASK LOCK",
-                "Task được xác định là COMPLEX.",
-                {
-                    "reason": (
-                        "Complex task requires "
-                        "targeted evidence before reasoning."
-                    )
-                }
-            )
-
-            print(
-                "\n🌐 Complex task: "
-                "thu thập evidence...",
-                flush=True
-            )
-
-            # -------------------------------------------------
-            # BUILD QUERIES
-            # -------------------------------------------------
-
-            queries = self.build_complex_queries(
+            return self._handle_direct_answer(
                 question
             )
 
-            self.trace(
-                4,
-                "EVIDENCE PLAN",
-                "Các truy vấn evidence được tạo.",
-                {
-                    "query_count": len(queries),
-                    "queries": queries
-                }
+        # =====================================================
+        # COMPLEX
+        # =====================================================
+
+        if call.action == Action.COMPLEX:
+
+            return self._handle_complex(
+                question
             )
 
-            print(
-                f"🔎 Evidence queries: "
-                f"{len(queries)}",
-                flush=True
-            )
-
-            # -------------------------------------------------
-            # SEARCH
-            # -------------------------------------------------
-
-            for index, query in enumerate(
-                queries,
-                start=1
-            ):
-
-                self.trace(
-                    5,
-                    "SEARCH PLAN",
-                    f"Search {index}/{len(queries)}",
-                    {
-                        "query": query
-                    }
-                )
-
-                print(
-                    f"\n🔎 Search "
-                    f"{index}/{len(queries)}",
-                    flush=True
-                )
-
-                print(
-                    f"   {query}",
-                    flush=True
-                )
-
-                try:
-
-                    result = self.tools[
-                        Action.SEARCH
-                    ].run(
-                        query
-                    )
-
-                    evidence_item = {
-                        "query": query,
-                        "result": result
-                    }
-
-                    evidence.append(
-                        evidence_item
-                    )
-
-                    if (
-                        isinstance(
-                            result,
-                            dict
-                        )
-                        and result.get(
-                            "success",
-                            False
-                        )
-                    ):
-
-                        raw_results = result.get(
-                            "results",
-                            []
-                        )
-
-                        result_count = (
-                            len(raw_results)
-                            if isinstance(
-                                raw_results,
-                                list
-                            )
-                            else 0
-                        )
-
-                        self.trace(
-                            6,
-                            "EVIDENCE ACQUISITION",
-                            f"Search {index} thành công.",
-                            {
-                                "query": query,
-                                "success": True,
-                                "result_count": result_count
-                            }
-                        )
-
-                        print(
-                            "   ✅ Evidence collected",
-                            flush=True
-                        )
-
-                    else:
-
-                        self.trace(
-                            6,
-                            "EVIDENCE ACQUISITION",
-                            (
-                                f"Search {index} "
-                                "không thu được evidence hợp lệ."
-                            ),
-                            {
-                                "query": query,
-                                "success": False
-                            }
-                        )
-
-                        print(
-                            "   ⚠️ Search returned "
-                            "failure or no evidence",
-                            flush=True
-                        )
-
-                except Exception as e:
-
-                    self.trace(
-                        6,
-                        "EVIDENCE ERROR",
-                        f"Search {index} failed.",
-                        {
-                            "query": query,
-                            "error": str(e)
-                        }
-                    )
-
-                    print(
-                        f"   ❌ Search failed: {e}",
-                        flush=True
-                    )
-
-                    evidence.append(
-                        {
-                            "query": query,
-                            "result": {
-                                "success": False,
-                                "source": "Search",
-                                "query": query,
-                                "error": str(e),
-                                "results": []
-                            }
-                        }
-                    )
-
-            print(
-                "\n✅ Evidence acquisition "
-                "hoàn tất",
-                flush=True
-            )
-
-            print(
-                f"📦 Evidence sets: "
-                f"{len(evidence)}",
-                flush=True
-            )
-
-            # =================================================
-            # 07 — EVIDENCE SUMMARY
-            # =================================================
-
-            evidence_summary = []
-
-            for index, item in enumerate(
-                evidence,
-                start=1
-            ):
-
-                if not isinstance(
-                    item,
-                    dict
-                ):
-                    continue
-
-                result = item.get(
-                    "result",
-                    {}
-                )
-
-                if not isinstance(
-                    result,
-                    dict
-                ):
-                    continue
-
-                results = result.get(
-                    "results",
-                    []
-                )
-
-                result_count = (
-                    len(results)
-                    if isinstance(
-                        results,
-                        list
-                    )
-                    else 0
-                )
-
-                evidence_summary.append(
-                    {
-                        "evidence_id": (
-                            f"EVIDENCE_{index}"
-                        ),
-                        "query": item.get(
-                            "query",
-                            ""
-                        ),
-                        "success": result.get(
-                            "success",
-                            False
-                        ),
-                        "source": result.get(
-                            "source",
-                            ""
-                        ),
-                        "result_count": result_count
-                    }
-                )
-
-            self.trace(
-                7,
-                "EVIDENCE SUMMARY",
-                "Tổng hợp trạng thái evidence.",
-                evidence_summary
-            )
-
-            # =================================================
-            # RAW EVIDENCE
-            # =================================================
-
-            self.debug_raw_evidence(
-                evidence
-            )
-
-            self.trace(
-                8,
-                "EVIDENCE INSPECTION",
-                (
-                    "Raw evidence đã được kiểm tra. "
-                    "Council chỉ được phép sử dụng "
-                    "evidence được cung cấp."
-                )
-            )
-
-            # =================================================
-            # COUNCIL
-            # =================================================
-
-            print(
-                "\n🤖 Focused Council: "
-                "Reasoning + Critic + Judge...",
-                flush=True
-            )
-
-            council_evidence = (
-                self.format_complex_evidence(
-                    evidence
-                )
-            )
-
-            self.trace(
-                9,
-                "COUNCIL INPUT",
-                "Evidence được compact trước Council.",
-                {
-                    "characters": len(
-                        council_evidence
-                    )
-                }
-            )
-
-            result = self.council.run(
-                question,
-                council_evidence,
-                mode="focused"
-            )
-
-            self.trace(
-                10,
-                "COUNCIL RESULT",
-                "Council + Judge đã hoàn tất."
-            )
-
-            answer = result
-
-            self.trace(
-                11,
-                "FINAL ANSWER",
-                "Trả kết quả từ Judge."
-            )
-
-            yield answer
-
-            self.memory.add(
-                "assistant",
-                answer
-            )
-
-            return
-
-        # =================================================
-        # TOOL VALIDATION
-        # =================================================
+        # =====================================================
+        # TOOL
+        # =====================================================
 
         if call.action not in self.tools:
 
@@ -670,17 +356,81 @@ class Agent:
                 f"{call.action}"
             )
 
-        # =================================================
-        # TOOL ROUTING
-        # =================================================
+        return self._handle_tool(
+            question,
+            call.action,
+            call.parameters
+        )
+
+    # =========================================================
+    # DIRECT ANSWER
+    # =========================================================
+
+    def _handle_direct_answer(
+        self,
+        question
+    ):
+
+        self.trace(
+            3,
+            "TASK LOCK",
+            "Task được route sang ANSWER → Direct LLM."
+        )
+
+        print(
+            "💬 Direct answer...",
+            flush=True
+        )
+
+        answer = self.llm.chat(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Trả lời câu hỏi của người dùng "
+                        "một cách chính xác và trực tiếp. "
+                        "Nếu không chắc chắn, hãy nói rõ. "
+                        "Không bịa dữ liệu."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": question
+                }
+            ]
+        )
+
+        self.trace(
+            4,
+            "FINAL ANSWER",
+            "Direct LLM đã tạo câu trả lời."
+        )
+
+        yield answer
+
+        self.memory.add(
+            "assistant",
+            answer
+        )
+
+    # =========================================================
+    # TOOL HANDLER
+    # =========================================================
+
+    def _handle_tool(
+        self,
+        question,
+        action,
+        parameters
+    ):
 
         self.trace(
             3,
             "TOOL ROUTING",
             "Task được route sang deterministic tool.",
             {
-                "action": call.action.value,
-                "parameters": call.parameters
+                "action": action.value,
+                "parameters": parameters
             }
         )
 
@@ -692,14 +442,14 @@ class Agent:
         try:
 
             result = self.execute_tool(
-                call.action,
-                call.parameters
+                action,
+                parameters
             )
 
-        except Exception as e:
+        except Exception as exc:
 
             answer = (
-                f"Tool execution failed: {e}"
+                f"Tool execution failed: {exc}"
             )
 
             self.trace(
@@ -722,29 +472,6 @@ class Agent:
 
             return
 
-        # -------------------------------------------------
-        # IMPORTANT DATA CONTRACT
-        #
-        # Search/File evidence is wrapped as:
-        #
-        # {
-        #     "query": "...",
-        #     "result": {
-        #         ...
-        #     }
-        # }
-        # -------------------------------------------------
-
-        evidence.append(
-            {
-                "query": call.parameters.get(
-                    "query",
-                    ""
-                ),
-                "result": result
-            }
-        )
-
         self.trace(
             4,
             "TOOL RESULT",
@@ -756,11 +483,11 @@ class Agent:
             flush=True
         )
 
-        # =================================================
+        # -----------------------------------------------------
         # CALCULATOR
-        # =================================================
+        # -----------------------------------------------------
 
-        if call.action == Action.CALCULATOR:
+        if action == Action.CALCULATOR:
 
             answer = (
                 self.format_calculator_result(
@@ -783,85 +510,1381 @@ class Agent:
 
             return
 
-        # =================================================
+        # -----------------------------------------------------
         # SEARCH / FILE
-        # =================================================
+        # -----------------------------------------------------
 
-        if call.action in (
-            Action.SEARCH,
-            Action.FILE
-        ):
+        evidence = [
+            {
+                "query": parameters.get(
+                    "query",
+                    question
+                ),
+                "result": result
+            }
+        ]
 
-            print(
-                "\n🤖 Qwen đang tổng hợp "
-                "evidence...",
-                flush=True
-            )
+        answer = self.synthesize_evidence(
+            question,
+            evidence
+        )
 
-            self.trace(
-                5,
-                "EVIDENCE SYNTHESIS",
-                "Evidence được gửi tới Qwen để tổng hợp."
-            )
+        self.trace(
+            7,
+            "FINAL ANSWER",
+            "Evidence synthesis hoàn tất."
+        )
 
-            # -------------------------------------------------
-            # DEBUG RAW EVIDENCE
-            # -------------------------------------------------
+        yield answer
 
-            self.debug_raw_evidence(
-                evidence
-            )
+        self.memory.add(
+            "assistant",
+            answer
+        )
 
-            # -------------------------------------------------
-            # SYNTHESIS
-            # -------------------------------------------------
+    # =========================================================
+    # EVIDENCE SYNTHESIS
+    # =========================================================
 
-            answer = self.synthesize_evidence(
+    def synthesize_evidence(
+        self,
+        question,
+        evidence
+    ):
+        """
+        Evidence boundary.
+
+        IMPORTANT:
+
+        SUPPORTED
+            → deterministic answer whenever possible
+
+        CONTRADICTED
+            → deterministic contradiction answer
+
+        CONFLICTED
+            → Qwen may summarize conflict
+
+        INSUFFICIENT
+            → Qwen may explain insufficiency
+
+        Qwen must NEVER turn:
+
+            SUPPORTED → INSUFFICIENT
+
+        or:
+
+            CONTRADICTED → SUPPORTED
+        """
+
+        print(
+            "\n🤖 Qwen đang tổng hợp evidence...",
+            flush=True
+        )
+
+        self.trace(
+            5,
+            "EVIDENCE SYNTHESIS",
+            "Evidence được chuyển vào EvidenceVerifier."
+        )
+
+        # =====================================================
+        # VERIFY
+        # =====================================================
+
+        verification = (
+            self.evidence_verifier.verify(
                 question,
                 evidence
             )
-
-            self.trace(
-                6,
-                "FINAL ANSWER",
-                "Evidence synthesis hoàn tất."
-            )
-
-            yield answer
-
-            self.memory.add(
-                "assistant",
-                answer
-            )
-
-            return
-
-        raise ValueError(
-            f"Unhandled action: "
-            f"{call.action}"
         )
 
-    # =====================================================
+        status = verification.get(
+            "status",
+            self.evidence_verifier.INSUFFICIENT
+        )
+
+        classifications = verification.get(
+            "classifications",
+            []
+        )
+
+        # =====================================================
+        # PRINT VERIFICATION
+        # =====================================================
+
+        if hasattr(
+            self.evidence_verifier,
+            "print_verification"
+        ):
+
+            self.evidence_verifier.print_verification(
+                verification
+            )
+
+        # =====================================================
+        # TRACE VERIFICATION
+        # =====================================================
+
+        self.trace(
+            6,
+            "EVIDENCE VERIFICATION",
+            "EvidenceVerifier đã xác định trạng thái evidence.",
+            {
+                "claim": verification.get(
+                    "claim",
+                    ""
+                ),
+                "status": status,
+                "support_count": verification.get(
+                    "support_count",
+                    0
+                ),
+                "contradiction_count": verification.get(
+                    "contradiction_count",
+                    0
+                ),
+                "supporting_evidence": verification.get(
+                    "supporting_evidence",
+                    []
+                ),
+                "contradicting_evidence": verification.get(
+                    "contradicting_evidence",
+                    []
+                )
+            }
+        )
+
+        print(
+            "\n============================================================",
+            flush=True
+        )
+
+        print(
+            "VERIFICATION RESULT",
+            flush=True
+        )
+
+        print(
+            "============================================================",
+            flush=True
+        )
+
+        print(
+            json.dumps(
+                verification,
+                ensure_ascii=False,
+                indent=2
+            ),
+            flush=True
+        )
+
+        # =====================================================
+        # SUPPORTED
+        # =====================================================
+
+        if status == self.evidence_verifier.SUPPORTED:
+
+            answer = (
+                self._answer_supported(
+                    question,
+                    verification
+                )
+            )
+
+            self.trace(
+                7,
+                "ANSWER GENERATION",
+                (
+                    "Verification = SUPPORTED → "
+                    "deterministic answer. "
+                    "Qwen không được phép phủ định verification."
+                ),
+                {
+                    "status": status
+                }
+            )
+
+            return answer
+
+        # =====================================================
+        # CONTRADICTED
+        # =====================================================
+
+        if status == self.evidence_verifier.CONTRADICTED:
+
+            answer = (
+                self._answer_contradicted(
+                    question,
+                    verification
+                )
+            )
+
+            self.trace(
+                7,
+                "ANSWER GENERATION",
+                (
+                    "Verification = CONTRADICTED → "
+                    "trả kết quả theo evidence."
+                ),
+                {
+                    "status": status
+                }
+            )
+
+            return answer
+
+        # =====================================================
+        # CONFLICTED
+        # =====================================================
+
+        if status == self.evidence_verifier.CONFLICTED:
+
+            answer = (
+                self._answer_conflicted(
+                    question,
+                    verification
+                )
+            )
+
+            self.trace(
+                7,
+                "ANSWER GENERATION",
+                (
+                    "Verification = CONFLICTED → "
+                    "Qwen tổng hợp mâu thuẫn."
+                ),
+                {
+                    "status": status
+                }
+            )
+
+            return answer
+
+        # =====================================================
+        # INSUFFICIENT
+        # =====================================================
+
+        answer = (
+            self._answer_insufficient(
+                question,
+                verification
+            )
+        )
+
+        self.trace(
+            7,
+            "ANSWER GENERATION",
+            (
+                "Verification = INSUFFICIENT → "
+                "không bịa; Qwen chỉ diễn đạt "
+                "giới hạn evidence."
+            ),
+            {
+                "status": status
+            }
+        )
+
+        return answer
+
+    # =========================================================
+    # SUPPORTED ANSWER
+    # =========================================================
+
+    def _answer_supported(
+        self,
+        question,
+        verification
+    ):
+        """
+        Produce answer from verified evidence.
+
+        No Qwen call is made for a straightforward verified
+        entity answer.
+        """
+
+        classifications = verification.get(
+            "classifications",
+            []
+        )
+
+        supporting = []
+
+        for item in classifications:
+
+            if not isinstance(
+                item,
+                dict
+            ):
+                continue
+
+            if (
+                item.get("label")
+                != self.evidence_verifier.SUPPORTS
+            ):
+                continue
+
+            supporting.append(
+                item
+            )
+
+        # -----------------------------------------------------
+        # Extract verified candidate names
+        # -----------------------------------------------------
+
+        candidates = []
+
+        for item in supporting:
+
+            names = item.get(
+                "candidate_names",
+                []
+            )
+
+            if not isinstance(
+                names,
+                list
+            ):
+                continue
+
+            for name in names:
+
+                name = str(
+                    name
+                ).strip()
+
+                if not name:
+                    continue
+
+                # Reject obvious garbage candidates.
+                if len(name) > 100:
+                    continue
+
+                if name not in candidates:
+
+                    candidates.append(
+                        name
+                    )
+
+        # -----------------------------------------------------
+        # President question
+        # -----------------------------------------------------
+
+        signals = {}
+
+        if hasattr(
+            self.evidence_verifier,
+            "_question_signals"
+        ):
+
+            signals = (
+                self.evidence_verifier
+                ._question_signals(
+                    question
+                )
+            )
+
+        if (
+            signals.get(
+                "asks_president",
+                False
+            )
+            and candidates
+        ):
+
+            if len(candidates) == 1:
+
+                return (
+                    "Tổng thống Mỹ năm 2026 là "
+                    f"{candidates[0]}."
+                )
+
+            return (
+                "Evidence được xác nhận cho thấy "
+                "các tên sau liên quan đến chức "
+                "Tổng thống Mỹ: "
+                + ", ".join(candidates)
+                + "."
+            )
+
+        # -----------------------------------------------------
+        # Generic verified answer
+        # -----------------------------------------------------
+
+        if candidates:
+
+            if len(candidates) == 1:
+
+                return (
+                    f"Evidence xác nhận: "
+                    f"{candidates[0]}."
+                )
+
+            return (
+                "Evidence xác nhận các thực thể sau: "
+                + ", ".join(candidates)
+                + "."
+            )
+
+        # -----------------------------------------------------
+        # Verified evidence but no entity extraction
+        #
+        # Do NOT let Qwen reverse SUPPORTED.
+        # We can safely use a constrained generator here.
+        # -----------------------------------------------------
+
+        supporting_text = []
+
+        for item in supporting:
+
+            title = str(
+                item.get(
+                    "title",
+                    ""
+                )
+            )
+
+            reason = str(
+                item.get(
+                    "reason",
+                    ""
+                )
+            )
+
+            if title:
+                supporting_text.append(
+                    title
+                )
+
+            if reason:
+                supporting_text.append(
+                    reason
+                )
+
+        return (
+            "Evidence đã được xác nhận là phù hợp "
+            "với câu hỏi, nhưng hệ thống chưa trích "
+            "xuất được thực thể trả lời một cách an toàn."
+        )
+
+    # =========================================================
+    # CONTRADICTED ANSWER
+    # =========================================================
+
+    def _answer_contradicted(
+        self,
+        question,
+        verification
+    ):
+        """
+        Deterministic contradiction response.
+        """
+
+        classifications = verification.get(
+            "classifications",
+            []
+        )
+
+        contradictions = []
+
+        for item in classifications:
+
+            if not isinstance(
+                item,
+                dict
+            ):
+                continue
+
+            if (
+                item.get("label")
+                != self.evidence_verifier.CONTRADICTS
+            ):
+                continue
+
+            contradictions.append(
+                item
+            )
+
+        if not contradictions:
+
+            return (
+                "Evidence hiện có phản bác câu hỏi, "
+                "nhưng chưa có đủ thông tin để mô tả "
+                "chi tiết."
+            )
+
+        reasons = []
+
+        for item in contradictions:
+
+            reason = str(
+                item.get(
+                    "reason",
+                    ""
+                )
+            ).strip()
+
+            if reason and reason not in reasons:
+
+                reasons.append(
+                    reason
+                )
+
+        if reasons:
+
+            return (
+                "Evidence hiện có phản bác câu hỏi. "
+                + " ".join(
+                    reasons[:2]
+                )
+            )
+
+        return (
+            "Evidence hiện có phản bác câu hỏi."
+        )
+
+    # =========================================================
+    # CONFLICTED ANSWER
+    # =========================================================
+
+    def _answer_conflicted(
+        self,
+        question,
+        verification
+    ):
+        """
+        Qwen may summarize conflicting evidence.
+
+        However, the verification status itself remains
+        authoritative.
+        """
+
+        verified_items = []
+
+        for item in verification.get(
+            "classifications",
+            []
+        ):
+
+            if not isinstance(
+                item,
+                dict
+            ):
+                continue
+
+            label = item.get(
+                "label"
+            )
+
+            if label not in (
+                self.evidence_verifier.SUPPORTS,
+                self.evidence_verifier.CONTRADICTS
+            ):
+                continue
+
+            verified_items.append(
+                {
+                    "result_id": item.get(
+                        "result_id",
+                        ""
+                    ),
+                    "label": label,
+                    "title": item.get(
+                        "title",
+                        ""
+                    ),
+                    "reason": item.get(
+                        "reason",
+                        ""
+                    ),
+                    "confidence": item.get(
+                        "confidence",
+                        0.0
+                    ),
+                    "method": item.get(
+                        "method",
+                        ""
+                    )
+                }
+            )
+
+        prompt = f"""
+Bạn là BCOS Evidence Conflict Summarizer.
+
+CÂU HỎI:
+{question}
+
+VERIFICATION STATUS:
+CONFLICTED
+
+Các evidence đã được phân loại:
+
+{json.dumps(
+    verified_items,
+    ensure_ascii=False,
+    indent=2
+)}
+
+QUY TẮC:
+
+1. Trạng thái CONFLICTED là kết luận cố định.
+2. Không được biến CONFLICTED thành SUPPORTED.
+3. Không được biến CONFLICTED thành INSUFFICIENT.
+4. Không được tự chọn một nguồn nếu không có căn cứ.
+5. Không dùng kiến thức riêng của model để giải quyết mâu thuẫn.
+6. Nêu rõ có evidence ủng hộ và evidence phản bác.
+7. Trả lời bằng tiếng Việt.
+8. Không bịa.
+
+Chỉ tạo câu trả lời cuối cùng.
+"""
+
+        return self.llm.chat(
+            [
+                {
+                    "role": "system",
+                    "content": prompt
+                }
+            ]
+        )
+
+    # =========================================================
+    # INSUFFICIENT ANSWER
+    # =========================================================
+
+    def _answer_insufficient(
+        self,
+        question,
+        verification
+    ):
+        """
+        Qwen may only explain the insufficiency.
+
+        It must NOT introduce external facts.
+        """
+
+        prompt = f"""
+Bạn là BCOS Evidence Answer Generator.
+
+CÂU HỎI:
+{question}
+
+VERIFICATION STATUS:
+INSUFFICIENT
+
+Verification đã kết luận rằng evidence hiện có
+chưa đủ để xác nhận hoặc phản bác câu hỏi.
+
+QUY TẮC:
+
+1. Không bịa.
+2. Không dùng kiến thức riêng của model.
+3. Không tự đưa ra một câu trả lời factual mới.
+4. Không biến INSUFFICIENT thành SUPPORTED.
+5. Không biến INSUFFICIENT thành CONTRADICTED.
+6. Chỉ nói rằng evidence hiện có chưa đủ.
+7. Trả lời ngắn gọn bằng tiếng Việt.
+
+Chỉ tạo câu trả lời cuối cùng.
+"""
+
+        return self.llm.chat(
+            [
+                {
+                    "role": "system",
+                    "content": prompt
+                }
+            ]
+        )
+
+    # =========================================================
+    # COMPLEX
+    # =========================================================
+
+    def _handle_complex(
+        self,
+        question
+    ):
+
+        self.trace(
+            3,
+            "TASK LOCK",
+            "Task được xác định là COMPLEX.",
+            {
+                "reason": (
+                    "Complex task requires targeted "
+                    "evidence before reasoning."
+                )
+            }
+        )
+
+        print(
+            "\n🌐 Complex task: "
+            "thu thập evidence...",
+            flush=True
+        )
+
+        # -----------------------------------------------------
+        # Build queries
+        # -----------------------------------------------------
+
+        queries = self.build_complex_queries(
+            question
+        )
+
+        self.trace(
+            4,
+            "EVIDENCE PLAN",
+            "Các truy vấn evidence được tạo.",
+            {
+                "query_count": len(
+                    queries
+                ),
+                "queries": queries
+            }
+        )
+
+        print(
+            f"🔎 Evidence queries: "
+            f"{len(queries)}",
+            flush=True
+        )
+
+        evidence = []
+
+        # -----------------------------------------------------
+        # Search
+        # -----------------------------------------------------
+
+        for index, query in enumerate(
+            queries,
+            start=1
+        ):
+
+            self.trace(
+                5,
+                "SEARCH PLAN",
+                f"Search {index}/{len(queries)}",
+                {
+                    "query": query
+                }
+            )
+
+            print(
+                f"\n🔎 Search "
+                f"{index}/{len(queries)}",
+                flush=True
+            )
+
+            print(
+                f"   {query}",
+                flush=True
+            )
+
+            try:
+
+                result = self.tools[
+                    Action.SEARCH
+                ].run(
+                    query
+                )
+
+                evidence.append(
+                    {
+                        "query": query,
+                        "result": result
+                    }
+                )
+
+                if (
+                    isinstance(
+                        result,
+                        dict
+                    )
+                    and result.get(
+                        "success",
+                        False
+                    )
+                ):
+
+                    raw_results = result.get(
+                        "results",
+                        []
+                    )
+
+                    result_count = (
+                        len(raw_results)
+                        if isinstance(
+                            raw_results,
+                            list
+                        )
+                        else 0
+                    )
+
+                    self.trace(
+                        6,
+                        "EVIDENCE ACQUISITION",
+                        f"Search {index} thành công.",
+                        {
+                            "query": query,
+                            "success": True,
+                            "result_count": result_count
+                        }
+                    )
+
+                    print(
+                        "   ✅ Evidence collected",
+                        flush=True
+                    )
+
+                else:
+
+                    self.trace(
+                        6,
+                        "EVIDENCE ACQUISITION",
+                        (
+                            f"Search {index} "
+                            "không thu được evidence hợp lệ."
+                        ),
+                        {
+                            "query": query,
+                            "success": False
+                        }
+                    )
+
+                    print(
+                        "   ⚠️ Search returned "
+                        "failure or no evidence",
+                        flush=True
+                    )
+
+            except Exception as exc:
+
+                self.trace(
+                    6,
+                    "EVIDENCE ERROR",
+                    f"Search {index} failed.",
+                    {
+                        "query": query,
+                        "error": str(exc)
+                    }
+                )
+
+                print(
+                    f"   ❌ Search failed: {exc}",
+                    flush=True
+                )
+
+                evidence.append(
+                    {
+                        "query": query,
+                        "result": {
+                            "success": False,
+                            "source": "Search",
+                            "query": query,
+                            "error": str(exc),
+                            "results": []
+                        }
+                    }
+                )
+
+        # -----------------------------------------------------
+        # Evidence summary
+        # -----------------------------------------------------
+
+        evidence_summary = []
+
+        for index, item in enumerate(
+            evidence,
+            start=1
+        ):
+
+            if not isinstance(
+                item,
+                dict
+            ):
+                continue
+
+            result = item.get(
+                "result",
+                {}
+            )
+
+            if not isinstance(
+                result,
+                dict
+            ):
+                continue
+
+            results = result.get(
+                "results",
+                []
+            )
+
+            result_count = (
+                len(results)
+                if isinstance(
+                    results,
+                    list
+                )
+                else 0
+            )
+
+            evidence_summary.append(
+                {
+                    "evidence_id": (
+                        f"EVIDENCE_{index}"
+                    ),
+                    "query": item.get(
+                        "query",
+                        ""
+                    ),
+                    "success": result.get(
+                        "success",
+                        False
+                    ),
+                    "source": result.get(
+                        "source",
+                        ""
+                    ),
+                    "result_count": result_count
+                }
+            )
+
+        self.trace(
+            7,
+            "EVIDENCE SUMMARY",
+            "Tổng hợp trạng thái evidence.",
+            evidence_summary
+        )
+
+        # -----------------------------------------------------
+        # Raw evidence
+        # -----------------------------------------------------
+
+        self.debug_raw_evidence(
+            evidence
+        )
+
+        self.trace(
+            8,
+            "EVIDENCE INSPECTION",
+            (
+                "Raw evidence đã được kiểm tra. "
+                "Council chỉ được phép sử dụng "
+                "evidence được cung cấp."
+            )
+        )
+
+        # -----------------------------------------------------
+        # Council
+        # -----------------------------------------------------
+
+        print(
+            "\n🤖 Focused Council: "
+            "Reasoning + Critic + Judge...",
+            flush=True
+        )
+
+        council_evidence = (
+            self.format_complex_evidence(
+                evidence
+            )
+        )
+
+        self.trace(
+            9,
+            "COUNCIL INPUT",
+            "Evidence được compact trước Council.",
+            {
+                "characters": len(
+                    council_evidence
+                )
+            }
+        )
+
+        result = self.council.run(
+            question,
+            council_evidence,
+            mode="focused"
+        )
+
+        self.trace(
+            10,
+            "COUNCIL RESULT",
+            "Council + Judge đã hoàn tất."
+        )
+
+        answer = result
+
+        self.trace(
+            11,
+            "FINAL ANSWER",
+            "Trả kết quả từ Judge."
+        )
+
+        yield answer
+
+        self.memory.add(
+            "assistant",
+            answer
+        )
+
+    # =========================================================
+    # EXECUTE TOOL
+    # =========================================================
+
+    def execute_tool(
+        self,
+        action,
+        parameters
+    ):
+
+        required = (
+            self.tool_required_parameters.get(
+                action,
+                []
+            )
+        )
+
+        parameters = (
+            parameters
+            if isinstance(
+                parameters,
+                dict
+            )
+            else {}
+        )
+
+        missing = []
+
+        for parameter in required:
+
+            value = parameters.get(
+                parameter
+            )
+
+            if value is None:
+
+                missing.append(
+                    parameter
+                )
+
+            elif (
+                isinstance(
+                    value,
+                    str
+                )
+                and not value.strip()
+            ):
+
+                missing.append(
+                    parameter
+                )
+
+        if missing:
+
+            raise ValueError(
+                "Missing required parameters: "
+                + ", ".join(
+                    missing
+                )
+            )
+
+        tool = self.tools.get(
+            action
+        )
+
+        if tool is None:
+
+            raise ValueError(
+                f"Unsupported tool action: "
+                f"{action}"
+            )
+
+        if action == Action.SEARCH:
+
+            return tool.run(
+                parameters["query"]
+            )
+
+        if action == Action.CALCULATOR:
+
+            return tool.run(
+                parameters["expression"]
+            )
+
+        if action == Action.FILE:
+
+            return tool.run(
+                parameters["path"]
+            )
+
+        raise ValueError(
+            f"Unsupported action: "
+            f"{action}"
+        )
+
+    # =========================================================
+    # COMPLEX QUERY BUILDER
+    # =========================================================
+
+    def build_complex_queries(
+        self,
+        question
+    ):
+
+        q = str(
+            question
+        ).lower()
+
+        queries = []
+
+        # -----------------------------------------------------
+        # SAVEPOINT
+        # -----------------------------------------------------
+
+        if "savepoint" in q:
+
+            queries.extend(
+                [
+                    (
+                        "SQLite official documentation "
+                        "SAVEPOINT"
+                    ),
+                    (
+                        "PostgreSQL official documentation "
+                        "SAVEPOINT"
+                    ),
+                    (
+                        "SQLite transaction savepoint "
+                        "official documentation"
+                    ),
+                    (
+                        "PostgreSQL transaction savepoint "
+                        "official documentation"
+                    ),
+                ]
+            )
+
+        # -----------------------------------------------------
+        # DATABASE / CONCURRENCY
+        # -----------------------------------------------------
+
+        if any(
+            token in q
+            for token in [
+                "sqlite",
+                "postgresql",
+                "postgres",
+                "database",
+                "concurrent",
+                "concurrency",
+                "warehouse",
+                "inventory",
+                "transaction",
+                "locking",
+                "lock",
+            ]
+        ):
+
+            queries.extend(
+                [
+                    (
+                        f"{question} "
+                        "database concurrency transactions"
+                    ),
+                    (
+                        f"{question} "
+                        "SQLite locking concurrency"
+                    ),
+                    (
+                        f"{question} "
+                        "PostgreSQL concurrency transactions"
+                    ),
+                ]
+            )
+
+        # -----------------------------------------------------
+        # Generic complex
+        # -----------------------------------------------------
+
+        if not queries:
+
+            queries.extend(
+                [
+                    question,
+                    f"{question} evidence",
+                    (
+                        f"{question} "
+                        "official documentation"
+                    ),
+                ]
+            )
+
+        # -----------------------------------------------------
+        # Deduplicate
+        # -----------------------------------------------------
+
+        result = []
+
+        seen = set()
+
+        for query in queries:
+
+            query = str(
+                query
+            ).strip()
+
+            if not query:
+                continue
+
+            normalized = query.lower()
+
+            if normalized in seen:
+                continue
+
+            seen.add(
+                normalized
+            )
+
+            result.append(
+                query
+            )
+
+        return result
+
+    # =========================================================
+    # FORMAT COMPLEX EVIDENCE
+    # =========================================================
+
+    def format_complex_evidence(
+        self,
+        evidence
+    ):
+
+        compact = []
+
+        for evidence_index, item in enumerate(
+            evidence,
+            start=1
+        ):
+
+            if not isinstance(
+                item,
+                dict
+            ):
+                continue
+
+            query = str(
+                item.get(
+                    "query",
+                    ""
+                )
+            )
+
+            result = item.get(
+                "result",
+                {}
+            )
+
+            if not isinstance(
+                result,
+                dict
+            ):
+                continue
+
+            compact_item = {
+                "evidence_id": (
+                    f"EVIDENCE_{evidence_index}"
+                ),
+                "query": query[:500],
+                "source": result.get(
+                    "source",
+                    ""
+                ),
+                "success": result.get(
+                    "success",
+                    False
+                ),
+            }
+
+            results = result.get(
+                "results",
+                []
+            )
+
+            compact_results = []
+
+            if isinstance(
+                results,
+                list
+            ):
+
+                for result_index, search_result in enumerate(
+                    results[:5],
+                    start=1
+                ):
+
+                    if not isinstance(
+                        search_result,
+                        dict
+                    ):
+                        continue
+
+                    compact_results.append(
+                        {
+                            "result_id": (
+                                f"EVIDENCE_"
+                                f"{evidence_index}"
+                                f"_R{result_index}"
+                            ),
+                            "title": str(
+                                search_result.get(
+                                    "title",
+                                    ""
+                                )
+                            )[:250],
+                            "url": str(
+                                search_result.get(
+                                    "url",
+                                    ""
+                                )
+                            )[:500],
+                            "content": str(
+                                search_result.get(
+                                    "content",
+                                    ""
+                                )
+                            )[:1800],
+                        }
+                    )
+
+            compact_item[
+                "results"
+            ] = compact_results
+
+            compact.append(
+                compact_item
+            )
+
+        return json.dumps(
+            compact,
+            ensure_ascii=False,
+            indent=2
+        )
+
+    # =========================================================
     # RAW EVIDENCE DEBUG
-    # =====================================================
+    # =========================================================
 
     def debug_raw_evidence(
         self,
         evidence
     ):
-        """
-        Print actual tool evidence.
-
-        This function does not:
-        - modify evidence
-        - summarize evidence
-        - call LLM
-        - make decisions
-        """
 
         print(
-            "\n"
-            "============================================================",
+            "\n============================================================",
             flush=True
         )
 
@@ -875,31 +1898,13 @@ class Agent:
             flush=True
         )
 
-        if not isinstance(
-            evidence,
-            list
-        ):
-
-            print(
-                "❌ Evidence is not a list",
-                flush=True
-            )
-
-            print(
-                f"TYPE: "
-                f"{type(evidence).__name__}",
-                flush=True
-            )
-
-            return
-
-        for index, item in enumerate(
+        for evidence_index, item in enumerate(
             evidence,
             start=1
         ):
 
             print(
-                f"\n--- EVIDENCE {index} ---",
+                f"\n--- EVIDENCE {evidence_index} ---",
                 flush=True
             )
 
@@ -909,22 +1914,14 @@ class Agent:
             ):
 
                 print(
-                    f"TYPE: "
-                    f"{type(item).__name__}",
-                    flush=True
-                )
-
-                print(
-                    f"VALUE: {item}",
+                    "INVALID EVIDENCE ITEM",
                     flush=True
                 )
 
                 continue
 
-            print(
-                f"EVIDENCE ID: "
-                f"EVIDENCE_{index}",
-                flush=True
+            evidence_id = (
+                f"EVIDENCE_{evidence_index}"
             )
 
             query = item.get(
@@ -932,14 +1929,20 @@ class Agent:
                 ""
             )
 
-            print(
-                f"QUERY: {query}",
-                flush=True
-            )
-
             result = item.get(
                 "result",
                 {}
+            )
+
+            print(
+                f"EVIDENCE ID: "
+                f"{evidence_id}",
+                flush=True
+            )
+
+            print(
+                f"QUERY: {query}",
+                flush=True
             )
 
             if not isinstance(
@@ -948,13 +1951,7 @@ class Agent:
             ):
 
                 print(
-                    "RESULT TYPE: "
-                    f"{type(result).__name__}",
-                    flush=True
-                )
-
-                print(
-                    f"RESULT: {result}",
+                    "RESULT: INVALID",
                     flush=True
                 )
 
@@ -972,108 +1969,80 @@ class Agent:
                 flush=True
             )
 
-            if result.get(
-                "error"
-            ):
-
-                print(
-                    f"ERROR: "
-                    f"{result.get('error')}",
-                    flush=True
-                )
-
-            raw_results = result.get(
+            results = result.get(
                 "results",
                 []
             )
 
-            if isinstance(
-                raw_results,
+            if not isinstance(
+                results,
                 list
             ):
 
                 print(
-                    f"RESULT COUNT: "
-                    f"{len(raw_results)}",
+                    "RESULT COUNT: 0",
                     flush=True
                 )
 
-                for result_index, search_item in enumerate(
-                    raw_results[:5],
-                    start=1
+                continue
+
+            print(
+                f"RESULT COUNT: "
+                f"{len(results)}",
+                flush=True
+            )
+
+            for result_index, search_result in enumerate(
+                results,
+                start=1
+            ):
+
+                if not isinstance(
+                    search_result,
+                    dict
                 ):
+                    continue
 
-                    print(
-                        f"\nRESULT {result_index}",
-                        flush=True
-                    )
-
-                    if not isinstance(
-                        search_item,
-                        dict
-                    ):
-
-                        print(
-                            f"TYPE: "
-                            f"{type(search_item).__name__}",
-                            flush=True
-                        )
-
-                        print(
-                            f"VALUE: "
-                            f"{search_item}",
-                            flush=True
-                        )
-
-                        continue
-
-                    print(
-                        "TITLE: "
-                        f"{search_item.get('title', '')}",
-                        flush=True
-                    )
-
-                    print(
-                        "URL: "
-                        f"{search_item.get('url', '')}",
-                        flush=True
-                    )
-
-                    print(
-                        "CONTENT:",
-                        flush=True
-                    )
-
-                    print(
-                        str(
-                            search_item.get(
-                                "content",
-                                ""
-                            )
-                        ),
-                        flush=True
-                    )
-
-            else:
+                result_id = (
+                    f"EVIDENCE_"
+                    f"{evidence_index}"
+                    f"_R{result_index}"
+                )
 
                 print(
-                    "STRUCTURED RESULT:",
+                    f"\n{result_id}",
                     flush=True
                 )
 
-                for key, value in result.items():
+                print(
+                    "TITLE:",
+                    search_result.get(
+                        "title",
+                        ""
+                    ),
+                    flush=True
+                )
 
-                    if key == "results":
-                        continue
+                print(
+                    "URL:",
+                    search_result.get(
+                        "url",
+                        ""
+                    ),
+                    flush=True
+                )
 
-                    print(
-                        f"{key}: {value}",
-                        flush=True
-                    )
+                print(
+                    "CONTENT:",
+                    search_result.get(
+                        "content",
+                        ""
+                    ),
+                    flush=True
+                )
 
         print(
-            "\n"
-            "============================================================",
+            "\n============================================================",
             flush=True
         )
 
@@ -1087,813 +2056,48 @@ class Agent:
             flush=True
         )
 
-    # =====================================================
-    # COMPLEX QUERY DECOMPOSITION
-    # =====================================================
-
-    def build_complex_queries(
-        self,
-        question
-    ):
-        """
-        Generate targeted evidence queries.
-
-        Important:
-        Independent factual claims should have independent
-        evidence paths.
-        """
-
-        q = question.lower()
-
-        queries = []
-
-        # =================================================
-        # DATABASE DETECTION
-        # =================================================
-
-        database_keywords = [
-            "postgresql",
-            "postgres",
-            "sqlite",
-            "mysql",
-            "mariadb",
-            "database",
-            "transaction",
-            "transactions",
-            "concurrency",
-            "concurrent",
-            "locking",
-            "lock",
-            "isolation",
-            "savepoint",
-        ]
-
-        is_database_question = any(
-            keyword in q
-            for keyword in database_keywords
-        )
-
-        if is_database_question:
-
-            # -------------------------------------------------
-            # PostgreSQL
-            # -------------------------------------------------
-
-            if (
-                "postgresql" in q
-                or "postgres" in q
-            ):
-
-                queries.append(
-                    "PostgreSQL transaction isolation concurrency locking official documentation"
-                )
-
-            # -------------------------------------------------
-            # SQLite
-            # -------------------------------------------------
-
-            if "sqlite" in q:
-
-                queries.append(
-                    "SQLite transactions isolation concurrency locking official documentation"
-                )
-
-            # -------------------------------------------------
-            # SAVEPOINT
-            # -------------------------------------------------
-
-            if "savepoint" in q:
-
-                if "sqlite" in q:
-
-                    queries.append(
-                        "SQLite SAVEPOINT official documentation"
-                    )
-
-                if (
-                    "postgresql" in q
-                    or "postgres" in q
-                ):
-
-                    queries.append(
-                        "PostgreSQL SAVEPOINT official documentation"
-                    )
-
-            # -------------------------------------------------
-            # Concurrent writes / comparison
-            # -------------------------------------------------
-
-            if (
-                "concurrent" in q
-                or "concurrency" in q
-                or "performance" in q
-                or "hiệu năng" in q
-                or "warehouse" in q
-                or "kho" in q
-                or "vs" in q
-                or "so sánh" in q
-                or "nên chọn" in q
-            ):
-
-                if (
-                    "postgresql" in q
-                    and "sqlite" in q
-                ):
-
-                    queries.append(
-                        "PostgreSQL vs SQLite concurrent writes performance workload comparison"
-                    )
-
-            # -------------------------------------------------
-            # Deduplicate
-            # -------------------------------------------------
-
-            queries = list(
-                dict.fromkeys(
-                    queries
-                )
-            )
-
-            if queries:
-                return queries
-
-        # =================================================
-        # GENERIC COMPLEX FALLBACK
-        # =================================================
-
-        return [
-            question
-        ]
-
-    # =====================================================
-    # FORMAT COMPLEX EVIDENCE
-    # =====================================================
-
-    def format_complex_evidence(
-        self,
-        evidence
-    ):
-        """
-        Normalize evidence for Council.
-
-        Input:
-
-            {
-                "query": "...",
-                "result": {
-                    "success": true,
-                    "source": "...",
-                    "results": [...]
-                }
-            }
-
-        Output contains explicit evidence IDs.
-        """
-
-        compact_evidence = []
-
-        for index, item in enumerate(
-            evidence,
-            start=1
-        ):
-
-            if not isinstance(
-                item,
-                dict
-            ):
-                continue
-
-            evidence_id = (
-                f"EVIDENCE_{index}"
-            )
-
-            query = str(
-                item.get(
-                    "query",
-                    ""
-                )
-            )[:500]
-
-            result = item.get(
-                "result",
-                {}
-            )
-
-            if not isinstance(
-                result,
-                dict
-            ):
-                continue
-
-            compact_result = {
-                "evidence_id": evidence_id,
-                "query": query,
-                "success": result.get(
-                    "success",
-                    False
-                ),
-                "source": result.get(
-                    "source",
-                    ""
-                )
-            }
-
-            # -------------------------------------------------
-            # Search results
-            # -------------------------------------------------
-
-            raw_results = result.get(
-                "results",
-                []
-            )
-
-            if isinstance(
-                raw_results,
-                list
-            ):
-
-                compact_results = []
-
-                for result_index, search_result in enumerate(
-                    raw_results[:5],
-                    start=1
-                ):
-
-                    if not isinstance(
-                        search_result,
-                        dict
-                    ):
-                        continue
-
-                    compact_results.append(
-                        {
-                            "result_id": (
-                                f"{evidence_id}_R"
-                                f"{result_index}"
-                            ),
-                            "title": str(
-                                search_result.get(
-                                    "title",
-                                    ""
-                                )
-                            )[:300],
-                            "url": str(
-                                search_result.get(
-                                    "url",
-                                    ""
-                                )
-                            )[:500],
-                            "content": str(
-                                search_result.get(
-                                    "content",
-                                    ""
-                                )
-                            )[:2000]
-                        }
-                    )
-
-                compact_result[
-                    "results"
-                ] = compact_results
-
-            # -------------------------------------------------
-            # Structured fields
-            # -------------------------------------------------
-
-            for key, value in result.items():
-
-                if key in (
-                    "success",
-                    "source",
-                    "results"
-                ):
-                    continue
-
-                if key == "content":
-
-                    compact_result[key] = str(
-                        value
-                    )[:3000]
-
-                else:
-
-                    compact_result[key] = value
-
-            compact_evidence.append(
-                compact_result
-            )
-
-        return json.dumps(
-            compact_evidence,
-            ensure_ascii=False,
-            indent=2
-        )
-
-    # =====================================================
-    # TOOL EXECUTION
-    # =====================================================
-
-    def execute_tool(
-        self,
-        action,
-        parameters
-    ):
-
-        if action not in self.tools:
-
-            raise ValueError(
-                f"Unknown tool action: "
-                f"{action}"
-            )
-
-        if not isinstance(
-            parameters,
-            dict
-        ):
-
-            raise TypeError(
-                "Tool parameters must be dict, "
-                f"got {type(parameters).__name__}"
-            )
-
-        required = (
-            self.tool_required_parameters.get(
-                action,
-                []
-            )
-        )
-
-        # -------------------------------------------------
-        # Missing parameters
-        # -------------------------------------------------
-
-        missing = [
-            key
-            for key in required
-            if key not in parameters
-        ]
-
-        if missing:
-
-            raise ValueError(
-                f"Invalid parameters for "
-                f"{action.value}: "
-                f"missing={missing}, "
-                f"received={list(parameters.keys())}"
-            )
-
-        # -------------------------------------------------
-        # Unknown parameters
-        # -------------------------------------------------
-
-        allowed = set(
-            required
-        )
-
-        unknown = [
-            key
-            for key in parameters
-            if key not in allowed
-        ]
-
-        if unknown:
-
-            raise ValueError(
-                f"Invalid parameters for "
-                f"{action.value}: "
-                f"unknown={unknown}, "
-                f"allowed={required}"
-            )
-
-        # -------------------------------------------------
-        # Execute
-        # -------------------------------------------------
-
-        return self.tools[
-            action
-        ].run(
-            **parameters
-        )
-
-    # =====================================================
-    # EVIDENCE SYNTHESIS
-    # =====================================================
-
-    def synthesize_evidence(
-        self,
-        question,
-        evidence
-    ):
-        """
-        Normalize evidence and ask Qwen to synthesize.
-
-        Critical data contract:
-
-            evidence
-                ↓
-            item["result"]
-                ↓
-            result["results"]
-
-        NOT:
-
-            item["results"]
-
-        This fixes the previous evidence extraction bug.
-        """
-
-        compact_evidence = []
-
-        # =================================================
-        # NORMALIZE EVIDENCE
-        # =================================================
-
-        for index, item in enumerate(
-            evidence,
-            start=1
-        ):
-
-            if not isinstance(
-                item,
-                dict
-            ):
-                continue
-
-            evidence_id = (
-                f"EVIDENCE_{index}"
-            )
-
-            query = str(
-                item.get(
-                    "query",
-                    ""
-                )
-            )[:500]
-
-            # =================================================
-            # TOOL WRAPPER
-            # =================================================
-
-            if "result" in item:
-
-                result = item.get(
-                    "result",
-                    {}
-                )
-
-                if not isinstance(
-                    result,
-                    dict
-                ):
-                    continue
-
-                compact_item = {
-                    "evidence_id": evidence_id,
-                    "query": query,
-                    "success": result.get(
-                        "success",
-                        False
-                    ),
-                    "source": result.get(
-                        "source",
-                        ""
-                    )
-                }
-
-                # -------------------------------------------------
-                # CORRECT SEARCH RESULT EXTRACTION
-                # -------------------------------------------------
-
-                raw_results = result.get(
-                    "results",
-                    []
-                )
-
-                if isinstance(
-                    raw_results,
-                    list
-                ):
-
-                    compact_results = []
-
-                    for result_index, search_result in enumerate(
-                        raw_results[:5],
-                        start=1
-                    ):
-
-                        if not isinstance(
-                            search_result,
-                            dict
-                        ):
-                            continue
-
-                        compact_results.append(
-                            {
-                                "result_id": (
-                                    f"{evidence_id}_R"
-                                    f"{result_index}"
-                                ),
-                                "title": str(
-                                    search_result.get(
-                                        "title",
-                                        ""
-                                    )
-                                )[:300],
-                                "url": str(
-                                    search_result.get(
-                                        "url",
-                                        ""
-                                    )
-                                )[:500],
-                                "content": str(
-                                    search_result.get(
-                                        "content",
-                                        ""
-                                    )
-                                )[:2000]
-                            }
-                        )
-
-                    compact_item[
-                        "results"
-                    ] = compact_results
-
-                # -------------------------------------------------
-                # Other structured fields
-                # -------------------------------------------------
-
-                for key, value in result.items():
-
-                    if key in (
-                        "success",
-                        "source",
-                        "results"
-                    ):
-                        continue
-
-                    if key == "content":
-
-                        compact_item[key] = str(
-                            value
-                        )[:5000]
-
-                    else:
-
-                        compact_item[key] = value
-
-                compact_evidence.append(
-                    compact_item
-                )
-
-                continue
-
-            # =================================================
-            # FALLBACK DIRECT EVIDENCE
-            # =================================================
-
-            compact_item = {
-                "evidence_id": evidence_id
-            }
-
-            for key, value in item.items():
-
-                if key == "content":
-
-                    compact_item[key] = str(
-                        value
-                    )[:5000]
-
-                else:
-
-                    compact_item[key] = value
-
-            compact_evidence.append(
-                compact_item
-            )
-
-        # =================================================
-        # SERIALIZE
-        # =================================================
-
-        evidence_text = json.dumps(
-            compact_evidence,
-            ensure_ascii=False,
-            indent=2
-        )
-
-        # =================================================
-        # DEBUG
-        # =================================================
-
-        print(
-            "\n"
-            "============================================================",
-            flush=True
-        )
-
-        print(
-            "EVIDENCE SYNTHESIS INPUT",
-            flush=True
-        )
-
-        print(
-            "============================================================",
-            flush=True
-        )
-
-        print(
-            evidence_text,
-            flush=True
-        )
-
-        print(
-            "============================================================",
-            flush=True
-        )
-
-        print(
-            f"Evidence gửi Qwen: "
-            f"{len(evidence_text)} ký tự",
-            flush=True
-        )
-
-        print(
-            "============================================================",
-            flush=True
-        )
-
-        # =================================================
-        # SYNTHESIS PROMPT
-        # =================================================
-
-        system_prompt = """
-Bạn là BCOS Evidence Synthesizer.
-
-NHIỆM VỤ:
-
-Trả lời câu hỏi của người dùng dựa trên evidence
-được cung cấp.
-
-==================================================
-QUY TRÌNH
-==================================================
-
-1. Đọc câu hỏi.
-
-2. Xác định factual claim mà câu hỏi yêu cầu.
-
-3. Đọc từng evidence.
-
-4. Tìm evidence thực sự liên quan tới claim.
-
-5. Nếu câu hỏi có năm hoặc mốc thời gian,
-   phải chú ý thời gian của evidence.
-
-6. Phân biệt evidence mới và evidence cũ.
-
-7. Nếu nhiều evidence phù hợp cùng xác nhận
-   một claim, có thể kết luận.
-
-8. Nếu một evidence cũ nói A nhưng nhiều evidence
-   mới nói B cho cùng mốc thời gian, ưu tiên
-   evidence phù hợp với mốc thời gian câu hỏi.
-
-9. Không biến absence of evidence thành
-   evidence of absence.
-
-10. Không sử dụng kiến thức bên ngoài evidence.
-
-11. Không bịa dữ liệu.
-
-12. Không yêu cầu một kết quả tìm kiếm phải chứa
-    nguyên văn toàn bộ câu trả lời.
-
-13. Khi nhiều evidence độc lập cùng xác nhận
-    một factual claim, có thể tổng hợp chúng.
-
-==================================================
-QUY TẮC THỜI GIAN
-==================================================
-
-Nếu câu hỏi hỏi một sự kiện hoặc trạng thái
-ở một năm cụ thể, hãy ưu tiên evidence có:
-
-- ngày tháng phù hợp;
-- nội dung nói trực tiếp về năm đó;
-- nguồn mới hơn;
-- nhiều nguồn độc lập cùng xác nhận.
-
-Ví dụ:
-
-Câu hỏi:
-"ai là tổng thống Mỹ 2026"
-
-Nếu evidence cũ nói Joe Biden nhưng các evidence
-phù hợp với năm 2026 nói Donald Trump là Tổng thống
-Mỹ, không được kết luận Joe Biden chỉ vì kết quả cũ.
-
-==================================================
-QUY TẮC EPISTEMIC
-==================================================
-
-FACT:
-Chỉ ghi fact được evidence hỗ trợ.
-
-INFERENCE:
-Nếu phải suy luận từ nhiều evidence,
-hãy ghi rõ đó là inference.
-
-UNKNOWN:
-Chỉ dùng khi evidence thực sự không đủ.
-
-Không được dùng UNKNOWN chỉ vì không có một
-nguồn duy nhất chứa toàn bộ câu trả lời.
-
-==================================================
-FORMAT
-==================================================
-
-FACT:
-- <fact>
-
-EVIDENCE:
-- <evidence_id>/<result_id>: <lý do hỗ trợ fact>
-
-ANSWER:
-<câu trả lời trực tiếp>
-
-Nếu thực sự không đủ evidence:
-
-UNKNOWN:
-- <thông tin còn thiếu>
-
-ANSWER:
-Chưa đủ bằng chứng để kết luận.
-"""
-
-        messages = [
-            {
-                "role": "system",
-                "content": system_prompt
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Câu hỏi:\n"
-                    f"{question}\n\n"
-                    f"Evidence:\n"
-                    f"{evidence_text}"
-                )
-            }
-        ]
-
-        # =================================================
-        # CALL QWEN
-        # =================================================
-
-        return self.llm.chat(
-            messages
-        )
-
-    # =====================================================
-    # CALCULATOR FORMAT
-    # =====================================================
+    # =========================================================
+    # CALCULATOR RESULT
+    # =========================================================
 
     def format_calculator_result(
         self,
         result
     ):
 
-        if not isinstance(
+        if isinstance(
             result,
             dict
         ):
 
-            return str(result)
+            if result.get(
+                "success",
+                False
+            ):
 
-        if result.get(
-            "success"
-        ):
+                if "result" in result:
 
-            expression = result.get(
-                "expression",
-                ""
+                    return str(
+                        result["result"]
+                    )
+
+                if "value" in result:
+
+                    return str(
+                        result["value"]
+                    )
+
+            error = result.get(
+                "error"
             )
 
-            value = result.get(
-                "result"
-            )
+            if error:
 
-            return (
-                f"{expression} = {value}"
-            )
+                return (
+                    f"Calculator error: "
+                    f"{error}"
+                )
 
-        error = result.get(
-            "error",
-            "Unknown calculator error"
-        )
-
-        return (
-            f"Không thể tính biểu thức: "
-            f"{error}"
+        return str(
+            result
         )
