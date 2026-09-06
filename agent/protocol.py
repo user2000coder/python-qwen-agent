@@ -11,18 +11,15 @@ from enum import Enum
 
 class Action(str, Enum):
 
-
     SEARCH = "search"
-
 
     CALCULATOR = "calculator"
 
-
     FILE = "file"
-
 
     ANSWER = "answer"
 
+    COMPLEX = "complex"
 
 
 # =====================================================
@@ -31,16 +28,13 @@ class Action(str, Enum):
 
 class ToolCall:
 
-
     def __init__(
         self,
         action,
         parameters=None
     ):
 
-
         self.action = action
-
 
         self.parameters = (
             parameters
@@ -48,32 +42,18 @@ class ToolCall:
             else {}
         )
 
-
-
     def to_dict(self):
 
-
         return {
-
-            "action":
-                self.action.value,
-
-
-            "parameters":
-                self.parameters
-
+            "action": self.action.value,
+            "parameters": self.parameters
         }
-
-
 
     def __repr__(self):
 
-
         return (
-
             f"ToolCall("
             f"{self.action}, "
             f"{self.parameters}"
             f")"
-
         )

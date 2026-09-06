@@ -1,0 +1,42 @@
+[
+  {
+    "role": "assistant",
+    "content": "FACT:\n- SQLite hỗ trợ SAVEPOINT, được xác nhận thông qua tài liệu của SQLite: \"The SAVEPOINT statement is supported by SQLite.\"\n\nINFERENCE:\n- PostgreSQL không hỗ trợ SAVEPOINT, dựa trên tài liệu của PostgreSQL и sự khác biệt về cơ sở dữ liệu.\n\nUNKNOWN:\n- \n\nKẾT LUẬN:\nSQLite hỗ trợ SAVEPOINT, trong khi PostgreSQL không hỗ trợ.\n\nRECOMMENDATION:\n- Người dùng nên chọn SQLite nếu yêu cầu sử dụng SAVEPOINT."
+  },
+  {
+    "role": "user",
+    "content": "SQLite có hỗ trợ SAVEPOINT không? PostgreSQL thì sao?"
+  },
+  {
+    "role": "assistant",
+    "content": "FACT:\n- SQLite hỗ trợ SAVEPOINT.\n- PostgreSQL hỗ trợ SAVEPOINT."
+  },
+  {
+    "role": "user",
+    "content": "SQLite có hỗ trợ SAVEPOINT không? PostgreSQL thì sao?"
+  },
+  {
+    "role": "user",
+    "content": "ai là tổng thống mỹ 2026"
+  },
+  {
+    "role": "assistant",
+    "content": "Chưa đủ bằng chứng để kết luận."
+  },
+  {
+    "role": "user",
+    "content": "ai là tổng thống mỹ 2026"
+  },
+  {
+    "role": "assistant",
+    "content": "Chưa đủ bằng chứng để kết luận."
+  },
+  {
+    "role": "user",
+    "content": "ai là tổng thống mỹ 2026"
+  },
+  {
+    "role": "assistant",
+    "content": "FACT:\nKhông có bằng chứng cụ thể xác định ai sẽ trở thành tổng thống Mỹ vào năm 2026.\n\nANSWER:\nChưa đủ bằng chứng để kết luận."
+  }
+]
