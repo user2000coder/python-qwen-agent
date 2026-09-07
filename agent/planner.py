@@ -2,6 +2,10 @@ import json
 
 from protocol import Action
 
+from problem.models import ProblemType
+from problem.reconstruct import ProblemReconstructor
+from problem.classifier import ProblemClassifier
+
 
 class PlannerResult:
 
@@ -17,7 +21,15 @@ class PlannerResult:
 class Planner:
 
     def __init__(self, llm):
+
         self.llm = llm
+
+        # =========================================================
+        # PROBLEM MODELING LAYER
+        # =========================================================
+
+        self.reconstructor = ProblemReconstructor()
+        self.classifier = ProblemClassifier()
 
     # =============================================================
     # MAIN PLANNER
@@ -34,7 +46,142 @@ class Planner:
         question = history[-1]["content"]
 
         # =========================================================
-        # 1. DETERMINISTIC CALCULATOR ROUTING
+        # 0. PROBLEM RECONSTRUCTION
+        # =========================================================
+        #
+        # Raw question
+        #       ↓
+        # ProblemModel
+        #
+        # Planner không chỉ nhìn raw text nữa.
+        # =========================================================
+
+        problem = self.reconstructor.reconstruct(
+            question,
+            source_type="text"
+        )
+
+        # =========================================================
+        # 1. PROBLEM CLASSIFICATION
+        # =========================================================
+
+        problem = self.classifier.classify(
+            problem
+        )
+
+        problem_type = (
+            problem.primary_problem_type
+        )
+
+        # =========================================================
+        # 2. MODEL-BASED CALCULATION ROUTING
+        # =========================================================
+
+        if problem_type == ProblemType.CALCULATION:
+
+            expression = self.extract_expression(
+                question
+            )
+
+            # Nếu model đã phát hiện expression,
+            # ưu tiên expression từ model.
+            calculation_expression = (
+                self._get_calculation_expression(
+                    problem
+                )
+            )
+
+            if calculation_expression:
+
+                expression = calculation_expression
+
+            if expression:
+
+                return PlannerResult(
+                    Action.CALCULATOR,
+                    {
+                        "expression": expression
+                    }
+                )
+
+        # =========================================================
+        # 3. MODEL-BASED MATHEMATICS
+        # =========================================================
+        #
+        # Hiện tại Action chưa có MATH/SOLVER.
+        #
+        # Vì vậy KHÔNG giả mạo Mathematics thành Calculator.
+        #
+        # Mathematics sẽ đi vào COMPLEX để xử lý ở tầng sau.
+        # =========================================================
+
+        if problem_type == ProblemType.MATHEMATICS:
+
+            return PlannerResult(
+                Action.COMPLEX,
+                {}
+            )
+
+        # =========================================================
+        # 4. MODEL-BASED DEBUG
+        # =========================================================
+
+        if problem_type == ProblemType.DEBUG:
+
+            return PlannerResult(
+                Action.COMPLEX,
+                {}
+            )
+
+        # =========================================================
+        # 5. MODEL-BASED CAUSAL REASONING
+        # =========================================================
+
+        if problem_type == ProblemType.CAUSAL:
+
+            return PlannerResult(
+                Action.COMPLEX,
+                {}
+            )
+
+        # =========================================================
+        # 6. MODEL-BASED OPTIMIZATION
+        # =========================================================
+
+        if problem_type == ProblemType.OPTIMIZATION:
+
+            return PlannerResult(
+                Action.COMPLEX,
+                {}
+            )
+
+        # =========================================================
+        # 7. MODEL-BASED DECISION
+        # =========================================================
+
+        if problem_type == ProblemType.DECISION:
+
+            return PlannerResult(
+                Action.COMPLEX,
+                {}
+            )
+
+        # =========================================================
+        # 8. MODEL-BASED DESIGN
+        # =========================================================
+
+        if problem_type == ProblemType.DESIGN:
+
+            return PlannerResult(
+                Action.COMPLEX,
+                {}
+            )
+
+        # =========================================================
+        # 9. DETERMINISTIC CALCULATOR FALLBACK
+        # =========================================================
+        #
+        # Giữ compatibility với routing cũ.
         # =========================================================
 
         if self.is_calculation(question):
@@ -51,7 +198,7 @@ class Planner:
             )
 
         # =========================================================
-        # 2. DETERMINISTIC SEARCH ROUTING
+        # 10. DETERMINISTIC SEARCH ROUTING
         # =========================================================
 
         if self.need_search(question):
@@ -64,7 +211,7 @@ class Planner:
             )
 
         # =========================================================
-        # 3. DETERMINISTIC COMPLEX ROUTING
+        # 11. DETERMINISTIC COMPLEX ROUTING
         # =========================================================
 
         if self.is_complex_reasoning(question):
@@ -75,7 +222,26 @@ class Planner:
             )
 
         # =========================================================
-        # 4. LLM PLANNER FALLBACK
+        # 12. FACT LOOKUP
+        # =========================================================
+        #
+        # Chỉ route FACT_LOOKUP sang SEARCH khi ProblemModel
+        # thực sự yêu cầu external evidence.
+        # =========================================================
+
+        if problem_type == ProblemType.FACT_LOOKUP:
+
+            if problem.evidence_requirements:
+
+                return PlannerResult(
+                    Action.SEARCH,
+                    {
+                        "query": question
+                    }
+                )
+
+        # =========================================================
+        # 13. LLM PLANNER FALLBACK
         # =========================================================
 
         messages = [
@@ -93,7 +259,7 @@ ACTION
 
 1. calculator
 
-Dùng cho phép tính số học.
+Dùng cho phép tính số học đơn giản.
 
 Schema:
 
@@ -116,6 +282,7 @@ Dùng khi cần:
 - giá
 - tin tức
 - sự kiện
+- kiểm chứng thông tin
 
 Schema:
 
@@ -149,6 +316,7 @@ Dùng khi câu hỏi yêu cầu:
 - so sánh nhiều phương án
 - đánh giá trade-off
 - phân tích nguyên nhân
+- phân tích root cause
 - đánh giá rủi ro
 - thiết kế kiến trúc
 - thiết kế hệ thống
@@ -162,6 +330,9 @@ Dùng khi câu hỏi yêu cầu:
 - locking
 - performance analysis
 - technical architecture
+- debugging
+- mathematics nhiều bước
+- optimization
 
 Schema:
 
@@ -219,6 +390,35 @@ QUY TẮC
                 Action.ANSWER,
                 {}
             )
+
+    # =============================================================
+    # PROBLEM MODEL HELPERS
+    # =============================================================
+
+    def _get_calculation_expression(
+        self,
+        problem
+    ):
+        """
+        Extract calculation expression from ProblemModel.
+
+        reconstruct.py currently creates a relation named:
+            calculation_expression
+
+        with expression stored in relation.expression.
+        """
+
+        for relation in problem.relations:
+
+            if relation.name == "calculation_expression":
+
+                if relation.expression:
+
+                    return str(
+                        relation.expression
+                    ).strip()
+
+        return ""
 
     # =============================================================
     # CALCULATOR
