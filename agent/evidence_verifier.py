@@ -1416,21 +1416,18 @@ class EvidenceVerifier:
         afterward.
         """
 
-        prompt = f"""
+        # -----------------------------------------------------
+        # Rules and examples go in the system message.
+        # The real question/evidence go LAST in a separate
+        # user message, so a small model does not confuse
+        # the examples with the evidence being classified.
+        # -----------------------------------------------------
+
+        rules = """
 Bạn là Evidence Classifier của BCOS.
 
-CÂU HỎI:
-{question}
-
-EVIDENCE:
-
-TITLE:
-{title}
-
-CONTENT:
-{content}
-
-Phân loại evidence thành đúng một:
+Nhiệm vụ: phân loại MỘT evidence (được gửi trong tin nhắn
+của user) thành đúng một nhãn:
 
 SUPPORTS
 CONTRADICTS
@@ -1441,6 +1438,10 @@ QUY TẮC EPISTEMIC:
 1. SUPPORTS
 
 Evidence trực tiếp hỗ trợ claim trong câu hỏi.
+
+Với câu hỏi mở (là gì, ai, khi nào, mới nhất, bao nhiêu...):
+chọn SUPPORTS khi evidence chứa thông tin trực tiếp trả lời
+câu hỏi, dù chỉ một phần.
 
 2. CONTRADICTS
 
@@ -1463,7 +1464,8 @@ Chọn IRRELEVANT khi evidence:
 KHÔNG đồng nghĩa với
 "phản bác claim".
 
-Ví dụ:
+VÍ DỤ MINH HỌA (chỉ để hiểu quy tắc, KHÔNG phải evidence
+cần phân loại; không nhắc lại nội dung ví dụ trong reason):
 
 Question:
 Ai là tổng thống Mỹ năm 2026?
@@ -1502,13 +1504,31 @@ lack of evidence = false
 
 10. Confidence thấp thì ưu tiên IRRELEVANT.
 
-Trả về JSON duy nhất:
+11. "reason" phải nói về evidence thật trong tin nhắn của
+user, không nói về các ví dụ ở trên.
 
-{{
+Trả về JSON duy nhất, không thêm chữ nào khác:
+
+{
     "label": "SUPPORTS | CONTRADICTS | IRRELEVANT",
     "reason": "...",
     "confidence": 0.0
-}}
+}
+"""
+
+        evidence_message = f"""
+CÂU HỎI:
+{question}
+
+EVIDENCE CẦN PHÂN LOẠI:
+
+TITLE:
+{title}
+
+CONTENT:
+{str(content)[:1500]}
+
+Trả về JSON duy nhất.
 """
 
         try:
@@ -1517,8 +1537,12 @@ Trả về JSON duy nhất:
                 [
                     {
                         "role": "system",
-                        "content": prompt,
-                    }
+                        "content": rules,
+                    },
+                    {
+                        "role": "user",
+                        "content": evidence_message,
+                    },
                 ]
             )
 

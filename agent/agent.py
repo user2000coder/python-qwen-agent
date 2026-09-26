@@ -1139,14 +1139,25 @@ QUY TẮC:
 Chỉ tạo câu trả lời cuối cùng.
 """
 
-        return self.llm.chat(
-            [
-                {
-                    "role": "system",
-                    "content": prompt
-                }
-            ]
-        )
+        try:
+
+            return self.llm.chat(
+                [
+                    {
+                        "role": "system",
+                        "content": prompt
+                    }
+                ]
+            )
+
+        except Exception:
+
+            # Verification status is authoritative;
+            # an LLM failure must not crash the answer.
+            return (
+                "Evidence hiện có mâu thuẫn: có nguồn ủng hộ "
+                "và có nguồn phản bác, nên chưa thể kết luận."
+            )
 
     # =========================================================
     # INSUFFICIENT ANSWER
@@ -1188,14 +1199,25 @@ QUY TẮC:
 Chỉ tạo câu trả lời cuối cùng.
 """
 
-        return self.llm.chat(
-            [
-                {
-                    "role": "system",
-                    "content": prompt
-                }
-            ]
-        )
+        try:
+
+            return self.llm.chat(
+                [
+                    {
+                        "role": "system",
+                        "content": prompt
+                    }
+                ]
+            )
+
+        except Exception:
+
+            # Verification status is authoritative;
+            # an LLM failure must not crash the answer.
+            return (
+                "Evidence hiện có chưa đủ để xác nhận "
+                "hoặc phản bác câu hỏi."
+            )
 
     # =========================================================
     # COMPLEX
