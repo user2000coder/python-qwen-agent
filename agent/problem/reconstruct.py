@@ -428,7 +428,7 @@ class ProblemReconstructor:
         self,
         text: str,
     ) -> list[str]:
-        """
+        r"""
         Extract mathematical equations from
         natural-language input.
 
