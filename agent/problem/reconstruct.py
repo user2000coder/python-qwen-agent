@@ -910,6 +910,10 @@ class ProblemReconstructor:
 
         # --------------------------------------------------
         # Question
+        #
+        # A question mark alone is a weak signal:
+        # "Python là gì?" can be answered from stable
+        # knowledge. Record it, but not as required.
         # --------------------------------------------------
 
         if "?" in text:
@@ -921,9 +925,44 @@ class ProblemReconstructor:
                         "relevant to the question."
                     ),
                     source_type="external",
-                    required=True,
+                    required=False,
                     reason=(
                         "Input is phrased as a question."
+                    ),
+                )
+            )
+
+        # --------------------------------------------------
+        # Time-sensitive information
+        # --------------------------------------------------
+
+        if self._contains_any(
+            lowered,
+            (
+                "hiện nay",
+                "hiện tại",
+                "mới nhất",
+                "gần đây",
+                "hôm nay",
+                "bây giờ",
+            ),
+        ) or re.search(
+            r"\b(?:latest|current|currently|today|recent|recently)\b"
+            r"|\b20\d{2}\b",
+            lowered,
+        ):
+
+            requirements.append(
+                EvidenceRequirement(
+                    description=(
+                        "Retrieve up-to-date external "
+                        "information."
+                    ),
+                    source_type="external",
+                    required=True,
+                    reason=(
+                        "Input refers to time-sensitive "
+                        "information."
                     ),
                 )
             )

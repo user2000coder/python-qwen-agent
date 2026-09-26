@@ -9,9 +9,12 @@ tests = [
         "expected_action": "calculator",
     },
     {
+        # Planner.is_complex_reasoning() routes database
+        # capability questions ("có hỗ trợ" + database entity)
+        # to COMPLEX, which runs targeted multi-query search.
         "input": "PostgreSQL có hỗ trợ row locking không?",
         "expected_type": "fact_lookup",
-        "expected_action": "search",
+        "expected_action": "complex",
     },
     {
         "input": "Nên dùng Redis lock hay PostgreSQL lock?",
@@ -36,9 +39,16 @@ tests = [
 ]
 
 
+class OfflineLLM:
+    """No Ollama: planner LLM fallback degrades to ANSWER."""
+
+    def chat(self, messages):
+        return '{"action": "answer", "parameters": {}}'
+
+
 reconstructor = ProblemReconstructor()
 classifier = ProblemClassifier()
-planner = Planner()
+planner = Planner(OfflineLLM())
 
 
 passed = 0
@@ -74,7 +84,9 @@ for test in tests:
     # Planner
     # --------------------------------------------------
 
-    result = planner.plan(text)
+    result = planner.plan(
+        [{"role": "user", "content": text}]
+    )
 
     actual_action = (
         result.action.value

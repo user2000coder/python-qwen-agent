@@ -43,7 +43,23 @@ class Planner:
                 {}
             )
 
-        question = history[-1]["content"]
+        last_message = history[-1]
+
+        question = (
+            last_message.get("content", "")
+            if isinstance(last_message, dict)
+            else ""
+        )
+
+        # Empty / non-text input: không có gì để reconstruct.
+        if (
+            not isinstance(question, str)
+            or not question.strip()
+        ):
+            return PlannerResult(
+                Action.ANSWER,
+                {}
+            )
 
         # =========================================================
         # 0. PROBLEM RECONSTRUCTION
@@ -54,24 +70,37 @@ class Planner:
         # ProblemModel
         #
         # Planner không chỉ nhìn raw text nữa.
+        #
+        # reconstruct() chỉ nhận (str | ProblemInput);
+        # str được tự động gán source_type="text".
         # =========================================================
-
-        problem = self.reconstructor.reconstruct(
-            question,
-            source_type="text"
-        )
 
         # =========================================================
         # 1. PROBLEM CLASSIFICATION
         # =========================================================
+        #
+        # Nếu modeling layer lỗi, planner vẫn tiếp tục với
+        # deterministic routing + LLM fallback.
+        # =========================================================
 
-        problem = self.classifier.classify(
-            problem
-        )
+        try:
 
-        problem_type = (
-            problem.primary_problem_type
-        )
+            problem = self.reconstructor.reconstruct(
+                question
+            )
+
+            problem = self.classifier.classify(
+                problem
+            )
+
+            problem_type = (
+                problem.primary_problem_type
+            )
+
+        except Exception:
+
+            problem = None
+            problem_type = ProblemType.UNKNOWN
 
         # =========================================================
         # 2. MODEL-BASED CALCULATION ROUTING
@@ -79,21 +108,25 @@ class Planner:
 
         if problem_type == ProblemType.CALCULATION:
 
-            expression = self.extract_expression(
-                question
-            )
-
-            # Nếu model đã phát hiện expression,
-            # ưu tiên expression từ model.
-            calculation_expression = (
+            # Ưu tiên expression từ model.
+            #
+            # Chỉ dùng raw text khi nó thực sự là biểu thức
+            # số học; tránh gửi "tính tổng doanh thu" sang
+            # calculator.
+            expression = (
                 self._get_calculation_expression(
                     problem
                 )
             )
 
-            if calculation_expression:
+            if (
+                not expression
+                and self.is_calculation(question)
+            ):
 
-                expression = calculation_expression
+                expression = self.extract_expression(
+                    question
+                )
 
             if expression:
 
@@ -227,11 +260,17 @@ class Planner:
         #
         # Chỉ route FACT_LOOKUP sang SEARCH khi ProblemModel
         # thực sự yêu cầu external evidence.
+        #
+        # Requirement phải là required=True và
+        # source_type="external". Dấu "?" đơn thuần chỉ tạo
+        # requirement required=False nên không đủ.
         # =========================================================
 
         if problem_type == ProblemType.FACT_LOOKUP:
 
-            if problem.evidence_requirements:
+            if self._requires_external_evidence(
+                problem
+            ):
 
                 return PlannerResult(
                     Action.SEARCH,
@@ -380,8 +419,11 @@ QUY TẮC
                 messages
             )
 
-            return self.parse(
-                response
+            return self._repair_result(
+                self.parse(
+                    response
+                ),
+                question
             )
 
         except Exception:
@@ -402,15 +444,29 @@ QUY TẮC
         """
         Extract calculation expression from ProblemModel.
 
-        reconstruct.py currently creates a relation named:
-            calculation_expression
+        reconstruct.py stores it in:
+            metadata["calculation_expression"]
 
-        with expression stored in relation.expression.
+        and in a relation named:
+            calculation
         """
+
+        if problem is None:
+            return ""
+
+        expression = problem.metadata.get(
+            "calculation_expression"
+        )
+
+        if isinstance(expression, str) and expression.strip():
+            return expression.strip()
 
         for relation in problem.relations:
 
-            if relation.name == "calculation_expression":
+            if relation.name in (
+                "calculation",
+                "calculation_expression"
+            ):
 
                 if relation.expression:
 
@@ -419,6 +475,70 @@ QUY TẮC
                     ).strip()
 
         return ""
+
+    def _requires_external_evidence(
+        self,
+        problem
+    ):
+
+        if problem is None:
+            return False
+
+        return any(
+            requirement.required
+            and requirement.source_type == "external"
+            for requirement in problem.evidence_requirements
+        )
+
+    # =============================================================
+    # REPAIR LLM PLANNER RESULT
+    # =============================================================
+
+    def _repair_result(
+        self,
+        result,
+        question
+    ):
+        """
+        LLM có thể chọn đúng action nhưng thiếu parameter.
+
+        - search thiếu query      → dùng câu hỏi gốc
+        - calculator thiếu expr   → answer
+        - file thiếu path         → answer
+        """
+
+        parameters = result.parameters
+
+        if result.action == Action.SEARCH:
+
+            if not parameters.get("query"):
+
+                return PlannerResult(
+                    Action.SEARCH,
+                    {
+                        "query": question
+                    }
+                )
+
+        if result.action == Action.CALCULATOR:
+
+            if not parameters.get("expression"):
+
+                return PlannerResult(
+                    Action.ANSWER,
+                    {}
+                )
+
+        if result.action == Action.FILE:
+
+            if not parameters.get("path"):
+
+                return PlannerResult(
+                    Action.ANSWER,
+                    {}
+                )
+
+        return result
 
     # =============================================================
     # CALCULATOR
@@ -1038,27 +1158,13 @@ QUY TẮC
                     "Planner response is not text"
                 )
 
-            start = text.find("{")
-            end = text.rfind("}") + 1
-
-            if (
-                start < 0
-                or end <= start
-            ):
-                raise ValueError(
-                    "Planner did not return JSON"
-                )
-
-            data = json.loads(
-                text[start:end]
+            data = self._extract_json_object(
+                text
             )
 
-            if not isinstance(
-                data,
-                dict
-            ):
+            if data is None:
                 raise ValueError(
-                    "Planner JSON is not an object"
+                    "Planner did not return a JSON object"
                 )
 
             action_value = data.get(
@@ -1066,8 +1172,16 @@ QUY TẮC
                 "answer"
             )
 
+            if not isinstance(
+                action_value,
+                str
+            ):
+                raise ValueError(
+                    "Planner action is not text"
+                )
+
             action = Action(
-                action_value
+                action_value.strip().lower()
             )
 
             parameters = data.get(
@@ -1088,10 +1202,9 @@ QUY TẮC
             if action == Action.CALCULATOR:
 
                 parameters = {
-                    "expression": str(
+                    "expression": self._as_text(
                         parameters.get(
-                            "expression",
-                            ""
+                            "expression"
                         )
                     )
                 }
@@ -1099,10 +1212,9 @@ QUY TẮC
             elif action == Action.SEARCH:
 
                 parameters = {
-                    "query": str(
+                    "query": self._as_text(
                         parameters.get(
-                            "query",
-                            ""
+                            "query"
                         )
                     )
                 }
@@ -1110,10 +1222,9 @@ QUY TẮC
             elif action == Action.FILE:
 
                 parameters = {
-                    "path": str(
+                    "path": self._as_text(
                         parameters.get(
-                            "path",
-                            ""
+                            "path"
                         )
                     )
                 }
@@ -1137,3 +1248,64 @@ QUY TẮC
                 Action.ANSWER,
                 {}
             )
+
+    # =============================================================
+
+    def _extract_json_object(
+        self,
+        text
+    ):
+        """
+        Return the first JSON object embedded in text.
+
+        Handles raw JSON, markdown code fences, and JSON
+        surrounded by prose (including prose that contains
+        other braces).
+        """
+
+        decoder = json.JSONDecoder()
+
+        index = text.find("{")
+
+        while index >= 0:
+
+            try:
+
+                data, _ = decoder.raw_decode(
+                    text,
+                    index
+                )
+
+                if isinstance(data, dict):
+                    return data
+
+            except ValueError:
+                pass
+
+            index = text.find(
+                "{",
+                index + 1
+            )
+
+        return None
+
+    def _as_text(
+        self,
+        value
+    ):
+        """
+        Normalize a parameter value to text.
+
+        None / dict / list / bool → "" (invalid).
+        """
+
+        if isinstance(value, str):
+            return value.strip()
+
+        if isinstance(value, bool):
+            return ""
+
+        if isinstance(value, (int, float)):
+            return str(value)
+
+        return ""
