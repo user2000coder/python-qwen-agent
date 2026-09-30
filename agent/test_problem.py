@@ -36,9 +36,23 @@ tests = [
 ]
 
 
+class FakeLLM:
+    """
+    Offline stand-in for the Ollama client.
+
+    Every input below is expected to be routed deterministically
+    by the problem model, so the LLM fallback must never be
+    reached. Returning an empty plan makes an accidental fallback
+    fail loudly instead of silently passing.
+    """
+
+    def chat(self, messages):
+        return "{}"
+
+
 reconstructor = ProblemReconstructor()
 classifier = ProblemClassifier()
-planner = Planner()
+planner = Planner(FakeLLM())
 
 
 passed = 0
@@ -74,7 +88,14 @@ for test in tests:
     # Planner
     # --------------------------------------------------
 
-    result = planner.plan(text)
+    result = planner.plan(
+        [
+            {
+                "role": "user",
+                "content": text,
+            }
+        ]
+    )
 
     actual_action = (
         result.action.value
@@ -127,3 +148,4 @@ if failed == 0:
     print("\nALL PLANNER TESTS PASSED")
 else:
     print("\nSOME PLANNER TESTS FAILED")
+    raise SystemExit(1)

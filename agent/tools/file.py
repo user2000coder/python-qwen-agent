@@ -6,6 +6,8 @@ Safe File Reader
 import os
 import json
 
+from paths import DATA_DIR
+
 
 
 class FileTool:
@@ -16,8 +18,12 @@ class FileTool:
 
 
     # Thư mục cho phép
+    #
+    # Resolved against the BCOS source tree, not the process
+    # working directory, so "data/x.txt" means the same file
+    # no matter where BCOS was launched from.
 
-    ALLOWED_DIR = "data"
+    ALLOWED_DIR = DATA_DIR
 
 
 
@@ -91,31 +97,96 @@ class FileTool:
     # Security
     # =====================================================
 
+    def resolve_target(
+        self,
+        path,
+        base
+    ):
+        """
+        Resolve a requested path to an absolute real path.
+
+        A relative path is always resolved inside the allowed
+        directory. A leading "data/" is accepted so callers can
+        keep using the documented "data/example.txt" form.
+        """
+
+        requested = str(
+            path
+        ).strip()
+
+        if os.path.isabs(
+            requested
+        ):
+            return os.path.realpath(
+                requested
+            )
+
+        normalized = requested.replace(
+            "\\",
+            "/"
+        ).lstrip(
+            "/"
+        )
+
+        allowed_name = os.path.basename(
+            base
+        )
+
+        prefix = allowed_name + "/"
+
+        if normalized.startswith(
+            prefix
+        ):
+
+            normalized = normalized[
+                len(prefix):
+            ]
+
+        return os.path.realpath(
+            os.path.join(
+                base,
+                normalized
+            )
+        )
+
+
+
     def validate_path(
         self,
         path
     ):
 
 
-        base = os.path.abspath(
+        base = os.path.realpath(
 
             self.ALLOWED_DIR
 
         )
 
 
-        target = os.path.abspath(
+        target = self.resolve_target(
 
-            path
+            path,
+
+            base
 
         )
 
 
 
-        if not target.startswith(
+        # startswith() is not a path boundary:
+        #
+        #     base   = /srv/bcos/data
+        #     target = /srv/bcos/data_secret/key.txt
+        #
+        # would pass a prefix test while living outside the
+        # allowed directory. Compare path components instead.
 
-            base
-
+        if (
+            target != base
+            and not target.startswith(
+                base + os.sep
+            )
         ):
 
             raise PermissionError(

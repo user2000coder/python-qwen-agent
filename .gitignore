@@ -1,0 +1,27 @@
+# ==========================
+# Python
+# ==========================
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ==========================
+# BCOS runtime state
+# ==========================
+
+agent/logs/*.log
+agent/cache/*
+!agent/cache/.gitkeep
+agent/data/*
+!agent/data/.gitkeep
+
+# ==========================
+# Editor / OS
+# ==========================
+
+.DS_Store
+.idea/
+.vscode/

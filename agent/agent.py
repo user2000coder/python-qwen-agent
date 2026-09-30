@@ -930,10 +930,13 @@ class Agent:
         # Verified evidence but no entity extraction
         #
         # Do NOT let Qwen reverse SUPPORTED.
-        # We can safely use a constrained generator here.
+        #
+        # The verifier already concluded SUPPORTED, so the
+        # answer is built deterministically from the supporting
+        # evidence instead of being handed back to the model.
         # -----------------------------------------------------
 
-        supporting_text = []
+        sources = []
 
         for item in supporting:
 
@@ -942,30 +945,136 @@ class Agent:
                     "title",
                     ""
                 )
-            )
+            ).strip()
 
-            reason = str(
+            url = str(
                 item.get(
-                    "reason",
+                    "url",
                     ""
                 )
+            ).strip()
+
+            if not title and not url:
+                continue
+
+            line = title or url
+
+            if title and url:
+                line = f"{title} — {url}"
+
+            if line not in sources:
+                sources.append(
+                    line
+                )
+
+        evidence_block = "\n".join(
+            f"- {line}"
+            for line in sources[:5]
+        )
+
+        # A polar question ("X có hỗ trợ Y không?") is answered
+        # affirmatively: SUPPORTED means the evidence confirms
+        # the claim the question asks about.
+        if self.is_polar_question(
+            question
+        ):
+
+            answer = (
+                "Có — evidence xác nhận điều này."
             )
 
-            if title:
-                supporting_text.append(
-                    title
-                )
+        else:
 
-            if reason:
-                supporting_text.append(
-                    reason
-                )
+            answer = (
+                "Evidence xác nhận nội dung câu hỏi."
+            )
+
+        if not evidence_block:
+            return answer
 
         return (
-            "Evidence đã được xác nhận là phù hợp "
-            "với câu hỏi, nhưng hệ thống chưa trích "
-            "xuất được thực thể trả lời một cách an toàn."
+            answer
+            + "\n\nBẰNG CHỨNG:\n"
+            + evidence_block
         )
+
+    # =========================================================
+    # POLAR QUESTION DETECTION
+    # =========================================================
+
+    def is_polar_question(
+        self,
+        question
+    ):
+        """
+        Deterministic yes/no (polar) question detection.
+
+        Vietnamese polar questions are marked by trailing
+        particles ("... không?", "... chưa?", "có phải ...").
+        English ones by a leading auxiliary verb.
+
+        Conservative on purpose: a false negative only costs a
+        slightly weaker wording, a false positive would assert
+        "Có" for a question that was never yes/no.
+        """
+
+        text = str(
+            question or ""
+        ).strip().lower()
+
+        if not text:
+            return False
+
+        text = text.rstrip(
+            "?!. "
+        )
+
+        if not text:
+            return False
+
+        vietnamese_markers = [
+            "khong",
+            "không",
+            "chưa",
+            "chua",
+            "phải không",
+            "phai khong",
+        ]
+
+        for marker in vietnamese_markers:
+
+            if text.endswith(
+                marker
+            ):
+                return True
+
+        if text.startswith(
+            "có phải"
+        ) or text.startswith(
+            "co phai"
+        ):
+            return True
+
+        english_auxiliaries = [
+            "does",
+            "do",
+            "did",
+            "is",
+            "are",
+            "was",
+            "were",
+            "can",
+            "could",
+            "will",
+            "would",
+            "has",
+            "have",
+            "should",
+        ]
+
+        first_word = text.split()[0]
+
+        return first_word in english_auxiliaries
 
     # =========================================================
     # CONTRADICTED ANSWER

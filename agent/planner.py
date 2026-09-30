@@ -178,7 +178,32 @@ class Planner:
             )
 
         # =========================================================
-        # 9. DETERMINISTIC CALCULATOR FALLBACK
+        # 9. MODEL-BASED FACT LOOKUP
+        # =========================================================
+        #
+        # Chỉ route FACT_LOOKUP sang SEARCH khi ProblemModel
+        # thực sự yêu cầu external evidence.
+        #
+        # Phải chạy TRƯỚC các fallback theo keyword bên dưới:
+        # một câu fact_lookup có chứa keyword "complex"
+        # (locking, transaction, concurrency, ...) nếu không
+        # sẽ bị is_complex_reasoning() chiếm và trả lời bằng
+        # model memory thay vì đi lấy evidence.
+        # =========================================================
+
+        if problem_type == ProblemType.FACT_LOOKUP:
+
+            if problem.evidence_requirements:
+
+                return PlannerResult(
+                    Action.SEARCH,
+                    {
+                        "query": question
+                    }
+                )
+
+        # =========================================================
+        # 10. DETERMINISTIC CALCULATOR FALLBACK
         # =========================================================
         #
         # Giữ compatibility với routing cũ.
@@ -198,7 +223,7 @@ class Planner:
             )
 
         # =========================================================
-        # 10. DETERMINISTIC SEARCH ROUTING
+        # 11. DETERMINISTIC SEARCH ROUTING
         # =========================================================
 
         if self.need_search(question):
@@ -211,7 +236,7 @@ class Planner:
             )
 
         # =========================================================
-        # 11. DETERMINISTIC COMPLEX ROUTING
+        # 12. DETERMINISTIC COMPLEX ROUTING
         # =========================================================
 
         if self.is_complex_reasoning(question):
@@ -220,25 +245,6 @@ class Planner:
                 Action.COMPLEX,
                 {}
             )
-
-        # =========================================================
-        # 12. FACT LOOKUP
-        # =========================================================
-        #
-        # Chỉ route FACT_LOOKUP sang SEARCH khi ProblemModel
-        # thực sự yêu cầu external evidence.
-        # =========================================================
-
-        if problem_type == ProblemType.FACT_LOOKUP:
-
-            if problem.evidence_requirements:
-
-                return PlannerResult(
-                    Action.SEARCH,
-                    {
-                        "query": question
-                    }
-                )
 
         # =========================================================
         # 13. LLM PLANNER FALLBACK

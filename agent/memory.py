@@ -3,14 +3,15 @@ BCOS Memory System
 """
 
 import json
-import os
+
+from paths import HISTORY_DIR
 
 
 
 class Memory:
 
 
-    FILE = "history/conversation.json"
+    FILE = HISTORY_DIR / "conversation.json"
 
 
     MAX_MESSAGES = 10
@@ -78,9 +79,9 @@ class Memory:
     def save(self):
 
 
-        os.makedirs(
+        HISTORY_DIR.mkdir(
 
-            "history",
+            parents=True,
 
             exist_ok=True
 
@@ -119,11 +120,7 @@ class Memory:
     def load(self):
 
 
-        if os.path.exists(
-
-            self.FILE
-
-        ):
+        if self.FILE.exists():
 
 
             try:
@@ -143,7 +140,10 @@ class Memory:
 
 
 
-            except:
+            except (
+                OSError,
+                ValueError,
+            ):
 
 
                 self.data = []
