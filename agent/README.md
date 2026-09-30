@@ -44,7 +44,7 @@ Mọi resource được phân giải theo thư mục nguồn (`agent/paths.py`),
 | Resource | Đường dẫn |
 | --- | --- |
 | System prompt | `agent/prompts/bcos.txt` |
-| Conversation memory | `agent/history/conversation.json` |
+| Conversation memory | `agent/history/conversation.json` (untracked — runtime state) |
 | File tool sandbox | `agent/data/` |
 | Logs | `agent/logs/` |
 
