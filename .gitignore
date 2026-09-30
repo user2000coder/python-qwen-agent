@@ -25,7 +25,8 @@ agent/history/*
 # any more.
 /history/
 
-agent/logs/*.log
+agent/logs/*
+!agent/logs/.gitkeep
 agent/cache/*
 !agent/cache/.gitkeep
 agent/data/*

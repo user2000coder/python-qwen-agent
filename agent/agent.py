@@ -78,6 +78,8 @@ It does NOT expose private model chain-of-thought.
 
 import json
 
+import log
+
 from llm import LLM
 from planner import Planner
 from memory import Memory
@@ -88,6 +90,11 @@ from evidence_verifier import EvidenceVerifier
 from tools.search import SearchTool
 from tools.calculator import CalculatorTool
 from tools.file import FileTool
+
+
+LOGGER = log.get(
+    "agent"
+)
 
 
 class Agent:
@@ -314,6 +321,44 @@ class Agent:
             flush=True
         )
 
+        # A planner fallback is a degradation, not a decision.
+        # Saying so is the difference between "the agent chose to
+        # answer directly" and "routing broke and nobody noticed".
+
+        planner_error = getattr(
+            call,
+            "error",
+            None
+        )
+
+        if planner_error:
+
+            self.trace(
+                2,
+                "PLANNER FALLBACK",
+                (
+                    "Planner không phân loại được; "
+                    "đã degrade sang ANSWER."
+                ),
+                {
+                    "error": planner_error
+                }
+            )
+
+            print(
+                f"⚠️  Planner degrade: {planner_error}",
+                flush=True
+            )
+
+        LOGGER.info(
+            "question=%r action=%s parameters=%r "
+            "planner_error=%r",
+            question,
+            call.action.value,
+            call.parameters,
+            planner_error,
+        )
+
         # =====================================================
         # ANSWER
         # =====================================================
@@ -452,6 +497,17 @@ class Agent:
                 f"Tool execution failed: {exc}"
             )
 
+            # A typo inside a tool reaches here too, and used to
+            # be shown to the user as a transient tool failure
+            # with no traceback anywhere.
+
+            LOGGER.error(
+                "tool %s raised for parameters %r",
+                action.value,
+                parameters,
+                exc_info=True
+            )
+
             self.trace(
                 4,
                 "TOOL ERROR",
@@ -461,6 +517,72 @@ class Agent:
             print(
                 f"❌ {answer}",
                 flush=True
+            )
+
+            yield answer
+
+            self.memory.add(
+                "assistant",
+                answer
+            )
+
+            return
+
+        # -----------------------------------------------------
+        # Retrieval health
+        # -----------------------------------------------------
+        #
+        # SearchTool and FileTool never raise: they return
+        # {"success": False, "error": ...}. Announcing success
+        # unconditionally made the trace assert a tool completed
+        # while it had in fact returned a 403, and the failure
+        # then reached the verifier as "zero evidence" — which
+        # the user read as "the claim is unsupported" rather
+        # than "retrieval failed".
+
+        tool_ok = True
+
+        tool_error = ""
+
+        if isinstance(
+            result,
+            dict
+        ):
+
+            tool_ok = bool(
+                result.get(
+                    "success",
+                    True
+                )
+            )
+
+            tool_error = str(
+                result.get(
+                    "error",
+                    ""
+                )
+            ).strip()
+
+        if not tool_ok:
+
+            self.trace(
+                4,
+                "TOOL FAILURE",
+                "Tool trả về success=False.",
+                {
+                    "action": action.value,
+                    "error": tool_error
+                }
+            )
+
+            print(
+                f"⚠️  Tool thất bại: {tool_error}",
+                flush=True
+            )
+
+            answer = self.describe_tool_failure(
+                action,
+                result
             )
 
             yield answer
@@ -520,7 +642,9 @@ class Agent:
                     "query",
                     question
                 ),
-                "result": result
+                "result": self.as_verifiable_result(
+                    result
+                )
             }
         ]
 
@@ -1586,6 +1710,47 @@ Chỉ tạo câu trả lời cuối cùng.
         )
 
         # -----------------------------------------------------
+        # Zero-evidence guard
+        # -----------------------------------------------------
+        #
+        # Without this the Council runs on an evidence list where
+        # every entry is {"success": False, "results": []} and the
+        # Judge answers from model memory — an evidence-first
+        # agent fabricating a confident answer. Three LLM calls
+        # on a CPU 3B model are also wasted.
+
+        usable_results = self.count_usable_results(
+            evidence
+        )
+
+        if usable_results == 0:
+
+            self.trace(
+                9,
+                "RETRIEVAL FAILURE",
+                (
+                    "Không thu được evidence nào. "
+                    "Bỏ qua Council."
+                ),
+                {
+                    "queries": len(evidence)
+                }
+            )
+
+            answer = self.describe_retrieval_failure(
+                evidence
+            )
+
+            yield answer
+
+            self.memory.add(
+                "assistant",
+                answer
+            )
+
+            return
+
+        # -----------------------------------------------------
         # Council
         # -----------------------------------------------------
 
@@ -1637,6 +1802,370 @@ Chỉ tạo câu trả lời cuối cùng.
         self.memory.add(
             "assistant",
             answer
+        )
+
+    # =========================================================
+    # RETRIEVAL HEALTH
+    # =========================================================
+
+    ENVELOPE_KEYS = (
+        "success",
+        "source",
+        "query",
+        "count",
+        "results",
+        "error",
+        "confidence",
+        "data_type",
+    )
+
+
+    def describe_tool_failure(
+        self,
+        action,
+        result
+    ):
+        """
+        Deterministic message for a tool that reported failure.
+
+        Never routed through the evidence verifier: "the tool
+        could not fetch anything" and "the evidence does not
+        support the claim" are different answers, and conflating
+        them is what made a blocked search look like a settled
+        question.
+        """
+
+        source = ""
+
+        error = ""
+
+        if isinstance(
+            result,
+            dict
+        ):
+
+            source = str(
+                result.get(
+                    "source",
+                    ""
+                )
+            ).strip()
+
+            error = str(
+                result.get(
+                    "error",
+                    ""
+                )
+            ).strip()
+
+        where = (
+            f"{action.value}"
+            + (
+                f" ({source})"
+                if source
+                else ""
+            )
+        )
+
+        lines = [
+            "KẾT LUẬN: Chưa thể trả lời vì tool "
+            "thu thập dữ liệu đã thất bại.",
+            "",
+            f"TOOL: {where}",
+        ]
+
+        if error:
+
+            lines.append(
+                f"LỖI: {error[:300]}"
+            )
+
+        lines.extend(
+            [
+                "",
+                "ĐỘ TIN CẬY: Không có.",
+                "",
+                "GIỚI HẠN: Đây là lỗi thu thập dữ liệu, "
+                "không phải kết luận về câu hỏi.",
+            ]
+        )
+
+        return "\n".join(
+            lines
+        )
+
+
+
+    def as_verifiable_result(
+        self,
+        result
+    ):
+        """
+        Give every successful tool payload a `results` list.
+
+        EvidenceVerifier only reads `result["results"]` and skips
+        an entry whose value is not a list. Two successful shapes
+        carry no such key and were therefore dropped in silence:
+
+            FileTool  {success, file, content, confidence}
+            CoinGecko {success, asset, symbol, price_usd, ...}
+
+        So a file that was read, or a price that was fetched,
+        produced zero classifications and the user was told there
+        was not enough evidence. Wrapping the payload here keeps
+        the verifier's contract untouched.
+        """
+
+        if not isinstance(
+            result,
+            dict
+        ):
+            return result
+
+        if isinstance(
+            result.get(
+                "results"
+            ),
+            list
+        ):
+            return result
+
+        if not result.get(
+            "success",
+            False
+        ):
+            return result
+
+        # -----------------------------------------------------
+        # Title
+        # -----------------------------------------------------
+
+        title = ""
+
+        for key in (
+            "file",
+            "asset",
+            "data_type",
+        ):
+
+            value = str(
+                result.get(
+                    key,
+                    ""
+                )
+            ).strip()
+
+            if value:
+
+                title = value
+
+                break
+
+        if not title:
+
+            title = str(
+                result.get(
+                    "source",
+                    "tool result"
+                )
+            )
+
+        # -----------------------------------------------------
+        # Content
+        # -----------------------------------------------------
+
+        content = str(
+            result.get(
+                "content",
+                ""
+            )
+        ).strip()
+
+        if not content:
+
+            parts = []
+
+            for key, value in result.items():
+
+                if key in self.ENVELOPE_KEYS:
+                    continue
+
+                parts.append(
+                    f"{key}: {value}"
+                )
+
+            content = ", ".join(
+                parts
+            )
+
+        if not content:
+            return result
+
+        adapted = dict(
+            result
+        )
+
+        adapted[
+            "results"
+        ] = [
+            {
+                "title": title,
+                "url": str(
+                    result.get(
+                        "url",
+                        ""
+                    )
+                ),
+                "content": content,
+            }
+        ]
+
+        adapted[
+            "count"
+        ] = 1
+
+        adapted[
+            "adapted_from"
+        ] = "structured_payload"
+
+        return adapted
+
+
+    def count_usable_results(
+        self,
+        evidence
+    ):
+        """
+        Number of search results actually available to reason on.
+
+        A failed search and a search that returned nothing are
+        both zero here: neither gives the Council anything to
+        ground an answer in.
+        """
+
+        total = 0
+
+        for item in evidence or []:
+
+            if not isinstance(
+                item,
+                dict
+            ):
+                continue
+
+            result = item.get(
+                "result"
+            )
+
+            if not isinstance(
+                result,
+                dict
+            ):
+                continue
+
+            if not result.get(
+                "success",
+                False
+            ):
+                continue
+
+            results = result.get(
+                "results"
+            )
+
+            if isinstance(
+                results,
+                list
+            ):
+                total += len(
+                    results
+                )
+
+        return total
+
+
+
+    def describe_retrieval_failure(
+        self,
+        evidence
+    ):
+        """
+        Deterministic message for "the tools returned nothing".
+
+        Distinct from "the evidence does not support the claim":
+        the user needs to know retrieval failed, not that the
+        world has no answer.
+        """
+
+        lines = [
+            "KẾT LUẬN: Không thu được evidence nào "
+            "nên chưa thể kết luận.",
+            "",
+            "NGUYÊN NHÂN: Các truy vấn sau không trả về "
+            "kết quả nào:",
+        ]
+
+        for item in evidence or []:
+
+            if not isinstance(
+                item,
+                dict
+            ):
+                continue
+
+            query = str(
+                item.get(
+                    "query",
+                    ""
+                )
+            ).strip()
+
+            result = item.get(
+                "result"
+            )
+
+            error = ""
+
+            if isinstance(
+                result,
+                dict
+            ):
+                error = str(
+                    result.get(
+                        "error",
+                        ""
+                    )
+                ).strip()
+
+            if not query:
+                continue
+
+            if error:
+
+                lines.append(
+                    f"- {query[:160]} — {error[:160]}"
+                )
+
+            else:
+
+                lines.append(
+                    f"- {query[:160]} — 0 kết quả"
+                )
+
+        lines.extend(
+            [
+                "",
+                "ĐỘ TIN CẬY: Không có.",
+                "",
+                "GIỚI HẠN: Đây là lỗi thu thập evidence, "
+                "không phải kết luận về câu hỏi. "
+                "Kiểm tra kết nối mạng hoặc search backend "
+                "rồi thử lại.",
+            ]
+        )
+
+        return "\n".join(
+            lines
         )
 
     # =========================================================

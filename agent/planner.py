@@ -1,4 +1,7 @@
 import json
+import re
+
+import log
 
 from protocol import Action
 
@@ -7,15 +10,26 @@ from problem.reconstruct import ProblemReconstructor
 from problem.classifier import ProblemClassifier
 
 
+LOGGER = log.get(
+    "planner"
+)
+
+
 class PlannerResult:
 
     def __init__(
         self,
         action,
-        parameters=None
+        parameters=None,
+        error=None
     ):
         self.action = action
         self.parameters = parameters or {}
+
+        # Set when this result is a degradation rather than a
+        # classification, so the caller can say so instead of
+        # presenting a fallback as a decision.
+        self.error = error
 
 
 class Planner:
@@ -95,7 +109,22 @@ class Planner:
 
                 expression = calculation_expression
 
-            if expression:
+            # The classifier types any "... bao nhiêu?" question
+            # as CALCULATION, and extract_expression() only strips
+            # a few Vietnamese words — so "dân số Việt Nam bao
+            # nhiêu" arrived here as the expression
+            # 'dân số việt nam', went to CalculatorTool, and the
+            # user was shown
+            #
+            #     Calculator error: invalid syntax (<unknown>, line 1)
+            #
+            # for a question that should have been searched.
+            # Only route to the calculator when what we extracted
+            # is actually arithmetic; otherwise fall through.
+
+            if self.is_arithmetic_expression(
+                expression
+            ):
 
                 return PlannerResult(
                     Action.CALCULATOR,
@@ -203,7 +232,33 @@ class Planner:
                 )
 
         # =========================================================
-        # 10. DETERMINISTIC CALCULATOR FALLBACK
+        # 10. DETERMINISTIC FILE ROUTING
+        # =========================================================
+        #
+        # Action.FILE previously appeared nowhere in plan() — it
+        # could only be produced if the LLM fallback happened to
+        # emit {"action": "file"}. Every file-shaped question
+        # ("đọc data/example.txt") classified as UNKNOWN, matched
+        # no deterministic rule, and fell through to ANSWER, so
+        # FileTool was never called and the model answered from
+        # memory about a file it had not opened.
+        # =========================================================
+
+        file_path = self.extract_file_path(
+            question
+        )
+
+        if file_path:
+
+            return PlannerResult(
+                Action.FILE,
+                {
+                    "path": file_path
+                }
+            )
+
+        # =========================================================
+        # 11. DETERMINISTIC CALCULATOR FALLBACK
         # =========================================================
         #
         # Giữ compatibility với routing cũ.
@@ -223,7 +278,7 @@ class Planner:
             )
 
         # =========================================================
-        # 11. DETERMINISTIC SEARCH ROUTING
+        # 12. DETERMINISTIC SEARCH ROUTING
         # =========================================================
 
         if self.need_search(question):
@@ -236,7 +291,7 @@ class Planner:
             )
 
         # =========================================================
-        # 12. DETERMINISTIC COMPLEX ROUTING
+        # 13. DETERMINISTIC COMPLEX ROUTING
         # =========================================================
 
         if self.is_complex_reasoning(question):
@@ -247,7 +302,7 @@ class Planner:
             )
 
         # =========================================================
-        # 13. LLM PLANNER FALLBACK
+        # 14. LLM PLANNER FALLBACK
         # =========================================================
 
         messages = [
@@ -390,11 +445,28 @@ QUY TẮC
                 response
             )
 
-        except Exception:
+        except Exception as exc:
+
+            # Previously silent: no print, no trace, no log. A
+            # fault in llm.chat() or parse() degraded every
+            # question to ANSWER — the model answering a live-fact
+            # question from memory — and nothing said so. Same
+            # defect class as the reconstruct() TypeError that
+            # surfaced only as "Qwen cannot search".
+
+            LOGGER.warning(
+                "LLM planner call failed; "
+                "falling back to ANSWER",
+                exc_info=True
+            )
 
             return PlannerResult(
                 Action.ANSWER,
-                {}
+                {},
+                error=(
+                    "LLM planner không dùng được: "
+                    f"{exc}"
+                )
             )
 
     # =============================================================
@@ -429,6 +501,123 @@ QUY TẮC
     # =============================================================
     # CALCULATOR
     # =============================================================
+
+    # Data files FileTool can serve. An allowlist, not a
+    # blocklist: "sqlite.org", "python 3.11.15" and a bare URL
+    # must not look like a file, or web questions get stolen.
+
+    FILE_EXTENSIONS = (
+        "txt",
+        "json",
+        "md",
+        "csv",
+        "tsv",
+        "log",
+        "yaml",
+        "yml",
+        "ini",
+        "xml",
+    )
+
+
+    FILE_PATH_PATTERN = re.compile(
+        r"(?<![\w./-])"
+        r"([\w.\-/]+\.(?:"
+        + "|".join(FILE_EXTENSIONS)
+        + r"))"
+        r"(?![\w/])",
+        re.IGNORECASE,
+    )
+
+
+    def extract_file_path(
+        self,
+        question
+    ):
+        """
+        Path of a data file the user is asking BCOS to read.
+
+        Returns None when the question names no such file, so the
+        caller falls through to the remaining routing.
+        """
+
+        text = str(
+            question or ""
+        )
+
+        if not text:
+            return None
+
+        # A URL is a web question, not a file request.
+        lowered = text.lower()
+
+        for marker in (
+            "http://",
+            "https://",
+            "www.",
+        ):
+
+            if marker in lowered:
+                return None
+
+        match = self.FILE_PATH_PATTERN.search(
+            text
+        )
+
+        if not match:
+            return None
+
+        return match.group(
+            1
+        )
+
+
+
+    # Characters a pure arithmetic expression may contain.
+
+    ARITHMETIC_CHARS = set(
+        "0123456789+-*/().%, \t"
+    )
+
+
+    def is_arithmetic_expression(
+        self,
+        expression
+    ):
+        """
+        True only for something CalculatorTool can evaluate.
+
+        Requires at least one digit, at least one operator, and
+        nothing outside ARITHMETIC_CHARS — so a leftover
+        Vietnamese phrase is rejected instead of being handed to
+        the AST evaluator.
+        """
+
+        text = str(
+            expression or ""
+        ).strip()
+
+        if not text:
+            return False
+
+        if not any(
+            char.isdigit()
+            for char in text
+        ):
+            return False
+
+        if any(
+            char not in self.ARITHMETIC_CHARS
+            for char in text
+        ):
+            return False
+
+        return any(
+            operator in text
+            for operator in "+-*/%"
+        )
+
+
 
     def is_calculation(
         self,
@@ -475,10 +664,26 @@ QUY TẮC
 
     # =============================================================
 
+    # Longest run of arithmetic characters in a sentence.
+
+    ARITHMETIC_RUN_PATTERN = re.compile(
+        r"[0-9][0-9+\-*/().%,\s]*[0-9)]"
+    )
+
+
     def extract_expression(
         self,
         question
     ):
+        """
+        Arithmetic expression contained in the question.
+
+        Stripping a fixed word list left Vietnamese fragments
+        behind ("kết quả của 25 * 4 là bao nhiêu" -> 'của 25 * 4
+        là'), which the caller then had to reject. Pull the
+        arithmetic substring out instead, and keep the stripped
+        text as a fallback for inputs the pattern misses.
+        """
 
         q = question.lower()
 
@@ -495,7 +700,36 @@ QUY TẮC
                 ""
             )
 
-        return q.strip()
+        stripped = q.strip()
+
+        if self.is_arithmetic_expression(
+            stripped
+        ):
+            return stripped
+
+        # Longest arithmetic run wins: "25 * 4" beats "25".
+        best = ""
+
+        for match in self.ARITHMETIC_RUN_PATTERN.finditer(
+            question
+        ):
+
+            candidate = match.group(
+                0
+            ).strip()
+
+            if not self.is_arithmetic_expression(
+                candidate
+            ):
+                continue
+
+            if len(candidate) > len(best):
+                best = candidate
+
+        if best:
+            return best
+
+        return stripped
 
     # =============================================================
     # SEARCH
@@ -1137,9 +1371,19 @@ QUY TẮC
                 parameters
             )
 
-        except Exception:
+        except Exception as exc:
+
+            LOGGER.warning(
+                "could not parse planner response; "
+                "falling back to ANSWER",
+                exc_info=True
+            )
 
             return PlannerResult(
                 Action.ANSWER,
-                {}
+                {},
+                error=(
+                    "Không đọc được kế hoạch từ LLM: "
+                    f"{exc}"
+                )
             )

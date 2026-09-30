@@ -397,17 +397,31 @@ class Council:
             # ---------------------------------------------
             # Result
             # ---------------------------------------------
+            #
+            # Two shapes reach this function:
+            #
+            #   flat   {query, source, success, results, ...}
+            #          produced by Agent.format_complex_evidence
+            #
+            #   nested {query, result: {source, success, results}}
+            #          the raw evidence list Agent builds internally
+            #
+            # Reading only the nested shape made every entry of the
+            # flat one collapse to source="", success=False,
+            # results=[] — so the Judge received no evidence at all
+            # while the workers received all of it.
 
             result = item.get(
                 "result",
-                {},
             )
 
             if not isinstance(
                 result,
                 dict,
             ):
-                continue
+
+                # Flat shape: the fields live on the item itself.
+                result = item
 
             compact_item = {
                 "query": query,
@@ -420,6 +434,20 @@ class Council:
                     False,
                 ),
             }
+
+            # Carry the citation anchor through so the Judge can
+            # actually cite what it was given.
+
+            evidence_id = item.get(
+                "evidence_id",
+            )
+
+            if evidence_id:
+                compact_item[
+                    "evidence_id"
+                ] = str(
+                    evidence_id
+                )
 
             # ---------------------------------------------
             # Search results
@@ -448,6 +476,15 @@ class Council:
 
                     compact_results.append(
                         {
+                            # Citation anchor, so the Judge can
+                            # point at the exact result it used.
+                            "result_id": str(
+                                search_result.get(
+                                    "result_id",
+                                    "",
+                                )
+                            )[:80],
+
                             "title": str(
                                 search_result.get(
                                     "title",

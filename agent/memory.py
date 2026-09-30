@@ -4,7 +4,14 @@ BCOS Memory System
 
 import json
 
+import log
+
 from paths import HISTORY_DIR
+
+
+LOGGER = log.get(
+    "memory"
+)
 
 
 
@@ -145,5 +152,15 @@ class Memory:
                 ValueError,
             ):
 
+
+                # Resetting silently is indistinguishable from a
+                # first run, so say which file was unreadable.
+
+                LOGGER.warning(
+                    "could not read %s; "
+                    "starting with empty memory",
+                    self.FILE,
+                    exc_info=True
+                )
 
                 self.data = []

@@ -25,7 +25,14 @@ sys.path.insert(
 )
 
 
+import log
+
 from agent import Agent
+
+
+LOGGER = log.get(
+    "repl"
+)
 
 
 
@@ -160,11 +167,33 @@ def main():
         except Exception as e:
 
 
+            # str(e) alone gave no file or line, which is how a
+            # TypeError in the planner could be reported only as
+            # "Qwen cannot search". The traceback goes to
+            # agent/logs/agent.log.
+
+            LOGGER.exception(
+
+                "unhandled error answering %r",
+
+                question
+
+            )
+
+
             print(
 
                 "\n❌ ERROR:",
 
                 e
+
+            )
+
+
+            print(
+
+                "   (traceback đã ghi vào "
+                "agent/logs/agent.log)"
 
             )
 
