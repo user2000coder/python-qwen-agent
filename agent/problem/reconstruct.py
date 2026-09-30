@@ -45,10 +45,25 @@ class ProblemReconstructor:
     def reconstruct(
         self,
         text_or_input: str | ProblemInput,
+        source_type: str | None = None,
     ) -> ProblemModel:
+        """
+        Reconstruct raw input into a ProblemModel.
+
+        Parameters
+        ----------
+        text_or_input : str | ProblemInput
+            Raw question text, or an already built ProblemInput.
+
+        source_type : str | None
+            Provenance of the input ("text", "external",
+            "technical", ...). When omitted the provenance
+            already carried by ProblemInput is kept.
+        """
 
         problem_input = self._normalize_input(
-            text_or_input
+            text_or_input,
+            source_type=source_type,
         )
 
         raw_text = problem_input.raw_text.strip()
@@ -278,6 +293,7 @@ class ProblemReconstructor:
     def _normalize_input(
         self,
         text_or_input: str | ProblemInput,
+        source_type: str | None = None,
     ) -> ProblemInput:
 
         if isinstance(
@@ -292,6 +308,9 @@ class ProblemReconstructor:
                     "ProblemInput.raw_text must be a string"
                 )
 
+            if source_type:
+                text_or_input.source_type = source_type
+
             return text_or_input
 
         if isinstance(
@@ -300,7 +319,7 @@ class ProblemReconstructor:
         ):
             return ProblemInput(
                 raw_text=text_or_input,
-                source_type="text",
+                source_type=source_type or "text",
             )
 
         raise TypeError(

@@ -1,8 +1,38 @@
 """
 BCOS Agent CLI
+
+Run as a script:
+
+    python agent/main.py
+
+The BCOS modules import each other flat ("from llm import LLM"),
+so the source directory has to be on sys.path. Adding it here
+makes the CLI launchable from any working directory instead of
+only from inside agent/.
 """
 
+import os
+import sys
+
+
+sys.path.insert(
+    0,
+    os.path.dirname(
+        os.path.abspath(
+            __file__
+        )
+    )
+)
+
+
+import log
+
 from agent import Agent
+
+
+LOGGER = log.get(
+    "repl"
+)
 
 
 
@@ -103,6 +133,24 @@ def main():
 
 
 
+        except EOFError:
+
+
+            # stdin closed (piped input, non-interactive run).
+            #
+            # Without this branch the generic Exception handler
+            # below swallows EOFError and the loop spins forever.
+
+            print(
+
+                "\n\nHết input. Bye!"
+
+            )
+
+            break
+
+
+
         except KeyboardInterrupt:
 
 
@@ -119,11 +167,33 @@ def main():
         except Exception as e:
 
 
+            # str(e) alone gave no file or line, which is how a
+            # TypeError in the planner could be reported only as
+            # "Qwen cannot search". The traceback goes to
+            # agent/logs/agent.log.
+
+            LOGGER.exception(
+
+                "unhandled error answering %r",
+
+                question
+
+            )
+
+
             print(
 
                 "\n❌ ERROR:",
 
                 e
+
+            )
+
+
+            print(
+
+                "   (traceback đã ghi vào "
+                "agent/logs/agent.log)"
 
             )
 

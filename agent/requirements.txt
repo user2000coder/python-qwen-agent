@@ -8,7 +8,13 @@ ollama
 
 
 # Web Search
-ddgs
+#
+# Pinned to the 9.x line: the backend roster in config.SEARCH_BACKEND,
+# the text result keys (title/href/body) and the exceptions module path
+# are 9.16-era facts, and ddgs marks list-valued `backend` deprecated.
+# The minor floor still lets upstream ship fixes to individual scrapers,
+# which is where they land.
+ddgs>=9.16,<10
 
 
 # Environment

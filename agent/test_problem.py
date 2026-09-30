@@ -36,9 +36,28 @@ tests = [
 ]
 
 
+class FakeLLM:
+    """
+    Offline stand-in for the Ollama client.
+
+    Every input below is expected to be routed deterministically
+    by the problem model, so the LLM fallback must never be
+    reached. It raises rather than returning "{}": Planner.parse
+    turns "{}" into Action.ANSWER, a silent default that would let
+    a future routing regression pass unnoticed for any case whose
+    expectation happens to be "answer".
+    """
+
+    def chat(self, messages):
+        raise AssertionError(
+            "LLM planner fallback reached: routing is no "
+            "longer deterministic for this input"
+        )
+
+
 reconstructor = ProblemReconstructor()
 classifier = ProblemClassifier()
-planner = Planner()
+planner = Planner(FakeLLM())
 
 
 passed = 0
@@ -74,7 +93,14 @@ for test in tests:
     # Planner
     # --------------------------------------------------
 
-    result = planner.plan(text)
+    result = planner.plan(
+        [
+            {
+                "role": "user",
+                "content": text,
+            }
+        ]
+    )
 
     actual_action = (
         result.action.value
@@ -127,3 +153,4 @@ if failed == 0:
     print("\nALL PLANNER TESTS PASSED")
 else:
     print("\nSOME PLANNER TESTS FAILED")
+    raise SystemExit(1)

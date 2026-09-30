@@ -1,0 +1,41 @@
+# ==========================
+# Python
+# ==========================
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ==========================
+# BCOS runtime state
+# ==========================
+#
+# Conversation memory is rewritten on every Agent.ask(), so
+# tracking it makes the working tree dirty after any run or test.
+# It is also what made the cwd-relative path bug confusing: two
+# tracked, divergent copies of the same "memory".
+
+agent/history/*
+!agent/history/.gitkeep
+
+# Orphan left by that bug, when history resolved against the
+# project root instead of the source tree. Nothing writes here
+# any more.
+/history/
+
+agent/logs/*
+!agent/logs/.gitkeep
+agent/cache/*
+!agent/cache/.gitkeep
+agent/data/*
+!agent/data/.gitkeep
+
+# ==========================
+# Editor / OS
+# ==========================
+
+.DS_Store
+.idea/
+.vscode/
