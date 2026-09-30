@@ -77,6 +77,8 @@ It does NOT expose private model chain-of-thought.
 """
 
 import json
+import re
+import unicodedata
 
 import log
 
@@ -1062,6 +1064,8 @@ class Agent:
 
         sources = []
 
+        reasons = []
+
         for item in supporting:
 
             title = str(
@@ -1077,6 +1081,24 @@ class Agent:
                     ""
                 )
             ).strip()
+
+            reason = str(
+                item.get(
+                    "reason",
+                    ""
+                )
+            ).strip()
+
+            # The classifier's reason is the only place it says
+            # HOW the evidence supports the claim. Dropping it
+            # left an assertion plus a link list — no information
+            # from the evidence at all.
+
+            if reason and reason not in reasons:
+
+                reasons.append(
+                    reason
+                )
 
             if not title and not url:
                 continue
@@ -1099,6 +1121,11 @@ class Agent:
         # A polar question ("X có hỗ trợ Y không?") is answered
         # affirmatively: SUPPORTED means the evidence confirms
         # the claim the question asks about.
+        #
+        # is_polar_question() is deliberately narrow, so a
+        # non-polar question falls through to wording that does
+        # not assert a yes.
+
         if self.is_polar_question(
             question
         ):
@@ -1110,76 +1137,107 @@ class Agent:
         else:
 
             answer = (
-                "Evidence xác nhận nội dung câu hỏi."
+                "Evidence phù hợp với câu hỏi, nhưng hệ "
+                "thống không trích xuất được một thực thể "
+                "trả lời cụ thể. Nội dung xác nhận được:"
             )
 
-        if not evidence_block:
-            return answer
-
-        return (
+        parts = [
             answer
-            + "\n\nBẰNG CHỨNG:\n"
-            + evidence_block
+        ]
+
+        if reasons:
+
+            parts.append(
+                "\nCĂN CỨ:\n"
+                + "\n".join(
+                    f"- {reason}"
+                    for reason in reasons[:3]
+                )
+            )
+
+        if evidence_block:
+
+            parts.append(
+                "\nBẰNG CHỨNG:\n"
+                + evidence_block
+            )
+
+        return "\n".join(
+            parts
         )
 
     # =========================================================
     # POLAR QUESTION DETECTION
     # =========================================================
 
-    def is_polar_question(
-        self,
-        question
-    ):
-        """
-        Deterministic yes/no (polar) question detection.
+    # Interrogatives that make a question NOT yes/no. Matched on
+    # diacritic-folded whole tokens, so "nao"/"nào" and
+    # "tai sao"/"tại sao" both hit.
 
-        Vietnamese polar questions are marked by trailing
-        particles ("... không?", "... chưa?", "có phải ...").
-        English ones by a leading auxiliary verb.
+    WH_TOKENS = frozenset(
+        {
+            "ai",
+            "gi",
+            "nao",
+            "dau",
+            "may",
+            "who",
+            "whom",
+            "whose",
+            "what",
+            "which",
+            "when",
+            "where",
+            "why",
+            "how",
+        }
+    )
 
-        Conservative on purpose: a false negative only costs a
-        slightly weaker wording, a false positive would assert
-        "Có" for a question that was never yes/no.
-        """
 
-        text = str(
-            question or ""
-        ).strip().lower()
+    WH_PHRASES = (
+        "bao nhieu",
+        "bao lau",
+        "khi nao",
+        "o dau",
+        "tai sao",
+        "vi sao",
+        "the nao",
+        "ra sao",
+        "nhu the nao",
+    )
 
-        if not text:
-            return False
 
-        text = text.rstrip(
-            "?!. "
-        )
+    # Vietnamese polar particles, and the frame token a real polar
+    # question pairs them with.
+    #
+    # The particle alone is not enough: "không" also means zero
+    # ("bằng không", "hàng không" = aviation) and "chưa" collides
+    # with "chua" = sour ("sữa chua" = yogurt) once diacritics are
+    # folded. Requiring a có/đã/phải/được frame separates
+    # "PostgreSQL có hỗ trợ row locking không?" from
+    # "Thành phần của sữa chua?".
 
-        if not text:
-            return False
-
-        vietnamese_markers = [
+    POLAR_PARTICLES = frozenset(
+        {
             "khong",
-            "không",
-            "chưa",
             "chua",
-            "phải không",
-            "phai khong",
-        ]
+        }
+    )
 
-        for marker in vietnamese_markers:
 
-            if text.endswith(
-                marker
-            ):
-                return True
+    POLAR_FRAME_TOKENS = frozenset(
+        {
+            "co",
+            "da",
+            "phai",
+            "duoc",
+        }
+    )
 
-        if text.startswith(
-            "có phải"
-        ) or text.startswith(
-            "co phai"
-        ):
-            return True
 
-        english_auxiliaries = [
+    ENGLISH_AUXILIARIES = frozenset(
+        {
             "does",
             "do",
             "did",
@@ -1194,11 +1252,117 @@ class Agent:
             "has",
             "have",
             "should",
-        ]
+        }
+    )
 
-        first_word = text.split()[0]
 
-        return first_word in english_auxiliaries
+    # "Can you list the steps…" is a request, not a yes/no question.
+
+    ENGLISH_REQUEST_PREFIXES = (
+        "can you",
+        "could you",
+        "would you",
+        "will you",
+        "do you mind",
+    )
+
+
+    def is_polar_question(
+        self,
+        question
+    ):
+        """
+        Deterministic yes/no (polar) question detection.
+
+        Answering "Có" to something that was never a yes/no
+        question is worse than a vague answer, so every rule here
+        is a narrowing one and the default is False:
+
+            * an interrogative (ai/gì/nào/bao nhiêu/why/how…)
+              disqualifies the question outright
+            * a Vietnamese particle must be the final token AND be
+              paired with a có/đã/phải/được frame
+            * an English auxiliary counts only at the start of an
+              actual question, and not in a request form
+        """
+
+        text = unicodedata.normalize(
+            "NFC",
+            str(
+                question or ""
+            ),
+        ).strip()
+
+        if not text:
+            return False
+
+        had_question_mark = "?" in text
+
+        folded = SearchTool.fold(
+            text
+        )
+
+        folded = folded.rstrip(
+            "?!.,;:…\u2026 \t"
+        )
+
+        if not folded:
+            return False
+
+        tokens = re.findall(
+            r"[a-z0-9]+",
+            folded
+        )
+
+        if not tokens:
+            return False
+
+        # -----------------------------------------------------
+        # Interrogative veto
+        # -----------------------------------------------------
+
+        if any(
+            token in self.WH_TOKENS
+            for token in tokens
+        ):
+            return False
+
+        for phrase in self.WH_PHRASES:
+
+            if phrase in folded:
+                return False
+
+        # -----------------------------------------------------
+        # Vietnamese: final particle + frame
+        # -----------------------------------------------------
+
+        if tokens[-1] in self.POLAR_PARTICLES:
+
+            return any(
+                token in self.POLAR_FRAME_TOKENS
+                for token in tokens[:-1]
+            )
+
+        if folded.startswith(
+            "co phai"
+        ):
+            return True
+
+        # -----------------------------------------------------
+        # English: leading auxiliary in a real question
+        # -----------------------------------------------------
+
+        if not had_question_mark:
+            return False
+
+        for prefix in self.ENGLISH_REQUEST_PREFIXES:
+
+            if folded.startswith(
+                prefix
+            ):
+                return False
+
+        return tokens[0] in self.ENGLISH_AUXILIARIES
 
     # =========================================================
     # CONTRADICTED ANSWER

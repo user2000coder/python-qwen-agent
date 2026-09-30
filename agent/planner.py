@@ -207,32 +207,7 @@ class Planner:
             )
 
         # =========================================================
-        # 9. MODEL-BASED FACT LOOKUP
-        # =========================================================
-        #
-        # Chỉ route FACT_LOOKUP sang SEARCH khi ProblemModel
-        # thực sự yêu cầu external evidence.
-        #
-        # Phải chạy TRƯỚC các fallback theo keyword bên dưới:
-        # một câu fact_lookup có chứa keyword "complex"
-        # (locking, transaction, concurrency, ...) nếu không
-        # sẽ bị is_complex_reasoning() chiếm và trả lời bằng
-        # model memory thay vì đi lấy evidence.
-        # =========================================================
-
-        if problem_type == ProblemType.FACT_LOOKUP:
-
-            if problem.evidence_requirements:
-
-                return PlannerResult(
-                    Action.SEARCH,
-                    {
-                        "query": question
-                    }
-                )
-
-        # =========================================================
-        # 10. DETERMINISTIC FILE ROUTING
+        # 9. DETERMINISTIC FILE ROUTING
         # =========================================================
         #
         # Action.FILE previously appeared nowhere in plan() — it
@@ -258,7 +233,7 @@ class Planner:
             )
 
         # =========================================================
-        # 11. DETERMINISTIC CALCULATOR FALLBACK
+        # 10. DETERMINISTIC CALCULATOR FALLBACK
         # =========================================================
         #
         # Giữ compatibility với routing cũ.
@@ -278,7 +253,7 @@ class Planner:
             )
 
         # =========================================================
-        # 12. DETERMINISTIC SEARCH ROUTING
+        # 11. DETERMINISTIC SEARCH ROUTING
         # =========================================================
 
         if self.need_search(question):
@@ -291,7 +266,7 @@ class Planner:
             )
 
         # =========================================================
-        # 13. DETERMINISTIC COMPLEX ROUTING
+        # 12. DETERMINISTIC COMPLEX ROUTING
         # =========================================================
 
         if self.is_complex_reasoning(question):
@@ -299,6 +274,36 @@ class Planner:
             return PlannerResult(
                 Action.COMPLEX,
                 {}
+            )
+
+        # =========================================================
+        # 13. MODEL-BASED FACT LOOKUP
+        # =========================================================
+        #
+        # Runs AFTER is_complex_reasoning(), which is the only
+        # discriminator available: the classifier types
+        # "So sánh PostgreSQL và MySQL" and "PostgreSQL có hỗ trợ
+        # row locking không?" both as FACT_LOOKUP, so the problem
+        # type alone cannot tell a comparison from a capability
+        # lookup. Hoisting this branch above the complex check
+        # demoted seven genuine reasoning questions (comparisons,
+        # pros/cons, risk analysis, migration plans) to a single
+        # web search.
+        #
+        # Not gated on problem.evidence_requirements: that is only
+        # populated when the text contains a literal "?", so the
+        # same question typed without punctuation fell through to
+        # the LLM fallback. FACT_LOOKUP means external evidence is
+        # required — that is what the type is for.
+        # =========================================================
+
+        if problem_type == ProblemType.FACT_LOOKUP:
+
+            return PlannerResult(
+                Action.SEARCH,
+                {
+                    "query": question
+                }
             )
 
         # =========================================================
@@ -1155,11 +1160,23 @@ QUY TẮC
             for keyword in technical_question_keywords
         )
 
-        if (
+        # Deliberately NOT returning True here.
+        #
+        # technical_question_keywords is a list of "does X support
+        # Y" forms — "có hỗ trợ", "support", "có dùng được". That
+        # is a capability lookup answerable from one authoritative
+        # page, not multi-step reasoning. Treating it as COMPLEX
+        # sent "PostgreSQL có hỗ trợ row locking không?" to the
+        # Council, which answered it from model memory instead of
+        # fetching the documentation.
+        #
+        # The variables stay because section 6 and the callers of
+        # has_database_context below still use the context signal.
+
+        _ = (
             has_database_context
             and has_technical_question
-        ):
-            return True
+        )
 
         # =========================================================
         # 6. PERFORMANCE / CONCURRENCY QUESTIONS

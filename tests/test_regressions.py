@@ -29,6 +29,49 @@ for entry in (str(ROOT), str(AGENT_DIR)):
         sys.path.insert(0, entry)
 
 
+# The fake Ollama client is installed at MODULE scope. It used to be
+# installed inside one test that a later test then depended on, so
+# running that later test alone (pytest -k, a shuffle) raised
+# ModuleNotFoundError.
+
+import types as _types
+
+if "ollama" not in sys.modules:
+
+    _fake_ollama = _types.ModuleType("ollama")
+
+    class _FakeOllamaClient:
+
+        def __init__(self, host=None):
+            pass
+
+        def chat(self, **kwargs):
+
+            content = ""
+
+            if kwargs.get("stream"):
+
+                return iter(
+                    [
+                        {
+                            "message": {
+                                "content": content
+                            }
+                        }
+                    ]
+                )
+
+            return {
+                "message": {
+                    "content": content
+                }
+            }
+
+    _fake_ollama.Client = _FakeOllamaClient
+
+    sys.modules["ollama"] = _fake_ollama
+
+
 import paths
 from memory import Memory
 from planner import Planner
@@ -159,12 +202,25 @@ def test_fact_lookup_with_complex_keyword_routes_to_search():
 
     classifier = ProblemClassifier()
 
-    questions = [
+    # A capability lookup ("does X support Y") is answerable from
+    # one authoritative page. is_complex_reasoning() used to return
+    # True for any question combining a database keyword with a
+    # "có hỗ trợ" form, so these went to the Council and were
+    # answered from model memory instead of being searched.
+    #
+    # The variant without a question mark matters: evidence
+    # requirements are only populated when the text contains a
+    # literal "?", so gating on them left the same question
+    # broken when typed without punctuation.
+
+    must_search = [
         "PostgreSQL có hỗ trợ row locking không?",
+        "PostgreSQL có hỗ trợ row locking không",
         "SQLite có hỗ trợ SAVEPOINT trong transaction không?",
+        "SQLite có hỗ trợ SAVEPOINT không",
     ]
 
-    for question in questions:
+    for question in must_search:
 
         problem = classifier.classify(
             reconstructor.reconstruct(question)
@@ -177,13 +233,6 @@ def test_fact_lookup_with_complex_keyword_routes_to_search():
             f"Expected fact_lookup for: {question}"
         )
 
-        # The keyword fallback would claim this question.
-        assert planner.is_complex_reasoning(question), (
-            "Precondition: this question must contain a "
-            "'complex' keyword, otherwise the test proves "
-            "nothing about the routing order"
-        )
-
         result = planner.plan(
             [
                 {
@@ -194,10 +243,89 @@ def test_fact_lookup_with_complex_keyword_routes_to_search():
         )
 
         assert result.action == Action.SEARCH, (
-            f"\nExpected SEARCH for fact_lookup question\n"
+            f"\nExpected SEARCH for a capability lookup\n"
             f"Question: {question}\n"
             f"Actual:   {result.action}\n"
         )
+
+    # The other half of the contract. Hoisting the FACT_LOOKUP
+    # branch above is_complex_reasoning() made all of these route
+    # to a single web search — the classifier types them
+    # fact_lookup too, so the problem type alone cannot tell a
+    # comparison from a capability lookup.
+
+    must_stay_complex = [
+        "So sánh PostgreSQL và MySQL về transaction isolation?",
+        "Ưu nhược điểm của microservice là gì?",
+        "Rủi ro khi dùng row locking trong warehouse là gì?",
+        "Kế hoạch migrate database sang PostgreSQL như thế nào?",
+        "Hệ thống của tôi nên scale như thế nào?",
+        "Redis có nhanh hơn PostgreSQL không?",
+        "Benchmark nào cho thấy PostgreSQL nhanh hơn?",
+    ]
+
+    for question in must_stay_complex:
+
+        result = planner.plan(
+            [
+                {
+                    "role": "user",
+                    "content": question,
+                }
+            ]
+        )
+
+        assert result.action == Action.COMPLEX, (
+            f"\nA reasoning question must keep the Council\n"
+            f"Question: {question}\n"
+            f"Actual:   {result.action}\n"
+        )
+
+
+# ============================================================
+# TEST 3b
+#
+# Runtime paths were resolved against the working directory, so
+# launching from the project root silently replaced the BCOS
+# system prompt with a four-line stub. Asserting properties of
+# paths.py is not enough: reverting llm.py alone left the suite
+# green.
+# ============================================================
+
+def test_system_prompt_loads_from_any_cwd():
+
+    from llm import LLM
+
+    stub_marker = "Ưu tiên Evidence."
+
+    original_cwd = os.getcwd()
+
+    try:
+
+        for cwd in (str(ROOT), str(AGENT_DIR), os.sep):
+
+            os.chdir(cwd)
+
+            prompt = LLM().load_prompt()
+
+            assert len(prompt) > 500, (
+                f"From cwd={cwd} the prompt is {len(prompt)} "
+                "characters — that is the built-in stub, not "
+                "agent/prompts/bcos.txt"
+            )
+
+            assert "BCOS" in prompt, (
+                f"From cwd={cwd} the loaded prompt does not "
+                "mention BCOS"
+            )
+
+            assert prompt.strip() != stub_marker, (
+                f"From cwd={cwd} the stub fallback was used"
+            )
+
+    finally:
+
+        os.chdir(original_cwd)
 
 
 # ============================================================
@@ -210,26 +338,35 @@ def test_fact_lookup_with_complex_keyword_routes_to_search():
 
 def test_file_tool_rejects_prefix_sibling_escape():
 
+    import tempfile
+    import shutil
+
     tool = FileTool()
 
-    base = Path(
-        os.path.realpath(
-            tool.ALLOWED_DIR
+    # Build the whole fixture in a temp directory: creating
+    # agent/data_secret/ inside the repository left an untracked
+    # directory behind whenever cleanup did not run, and
+    # .gitignore only covers agent/data/.
+
+    workspace = Path(
+        tempfile.mkdtemp(
+            prefix="bcos-sandbox-"
         )
     )
+
+    base = workspace / "data"
+
+    base.mkdir()
+
+    tool.ALLOWED_DIR = base
 
     sibling = Path(
         str(base) + "_secret"
     )
 
-    created_dir = not sibling.exists()
+    sibling.mkdir()
 
     secret = sibling / "key.txt"
-
-    sibling.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
 
     secret.write_text(
         "LEAK",
@@ -268,16 +405,10 @@ def test_file_tool_rejects_prefix_sibling_escape():
 
     finally:
 
-        secret.unlink(
-            missing_ok=True
+        shutil.rmtree(
+            workspace,
+            ignore_errors=True,
         )
-
-        if created_dir:
-
-            try:
-                sibling.rmdir()
-            except OSError:
-                pass
 
 
 # ============================================================
@@ -403,29 +534,6 @@ def test_runtime_paths_are_cwd_independent():
 
 def test_polar_question_detection():
 
-    import types
-
-    fake_ollama = types.ModuleType("ollama")
-
-    class _Client:
-
-        def __init__(self, host=None):
-            pass
-
-        def chat(self, **kwargs):
-            return {
-                "message": {
-                    "content": ""
-                }
-            }
-
-    fake_ollama.Client = _Client
-
-    sys.modules.setdefault(
-        "ollama",
-        fake_ollama,
-    )
-
     from agent import Agent
 
     bcos = Agent()
@@ -438,13 +546,47 @@ def test_polar_question_detection():
         "Có phải SQLite hỗ trợ SAVEPOINT?",
         "Does SQLite support SAVEPOINT?",
         "Is Redis faster than PostgreSQL?",
+        # no question mark
+        "PostgreSQL có hỗ trợ row locking không",
+        # written without diacritics
+        "sqlite co ho tro savepoint khong?",
+        "ban da lam xong chua?",
+        # yogurt, but genuinely a yes/no question about it
+        "sua chua co ngon khong",
     ]
+
+    # Every entry below was misclassified as polar by the first
+    # version of this detector, which matched the particle as a
+    # SUFFIX. Asserting "Có" for these is worse than a vague
+    # answer, so they are the real contract of this function.
+    #
+    # Several of them contain "?", so a detector reduced to
+    # `"?" in question` fails here — the previous list was
+    # satisfied by exactly that.
 
     not_polar = [
         "ai là tổng thống mỹ 2026",
         "Thiết kế database warehouse",
         "Tính 125 * 8",
         "",
+        # "chua" = sour, not "chưa" = yet
+        "Thành phần của sữa chua?",
+        "Tại sao sữa bị chua?",
+        "Giá canh chua bao nhiêu?",
+        # "không" = zero / aviation, not the polar particle
+        "Doanh thu ngành hàng không?",
+        "Tồn kho hiện tại bằng không.",
+        "Áp suất chân không là gì?",
+        # diacritic-less Vietnamese colliding with English
+        # auxiliaries: can -> Can Tho, do -> Do dau
+        "Can Tho co bao nhieu dan?",
+        "Do dau ma lam phat tang?",
+        "Will Smith sinh nam nao?",
+        "Độ ẩm hôm nay thế nào?",
+        # English requests and non-questions
+        "Can you list the steps to configure row locking?",
+        "Do not use row locking here",
+        "Have a look at the deadlock trace",
     ]
 
     for question in polar:
@@ -512,6 +654,41 @@ def test_supported_answer_is_grounded():
 
 
 # ============================================================
+# TEST 12
+#
+# The REPL caught EOFError in its generic handler and looped
+# forever when stdin was closed (a pipe, a non-interactive run).
+# ============================================================
+
+def test_cli_exits_on_eof():
+
+    import subprocess
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(AGENT_DIR / "main.py"),
+        ],
+        cwd=str(ROOT),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert completed.returncode == 0, (
+        "The CLI must exit cleanly on EOF, got "
+        f"returncode={completed.returncode}\n"
+        f"stderr:\n{completed.stderr[-2000:]}"
+    )
+
+    assert "Hết input" in completed.stdout, (
+        "The CLI should say why it stopped:\n"
+        f"{completed.stdout[-2000:]}"
+    )
+
+
+# ============================================================
 # TEST RUNNER
 # ============================================================
 
@@ -521,11 +698,13 @@ def run_all_tests():
         test_reconstruct_accepts_source_type,
         test_planner_does_not_crash,
         test_fact_lookup_with_complex_keyword_routes_to_search,
+        test_system_prompt_loads_from_any_cwd,
         test_file_tool_rejects_prefix_sibling_escape,
         test_file_tool_reads_allowed_file,
         test_runtime_paths_are_cwd_independent,
         test_polar_question_detection,
         test_supported_answer_is_grounded,
+        test_cli_exits_on_eof,
     ]
 
     print()

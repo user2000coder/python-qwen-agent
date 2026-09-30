@@ -42,12 +42,17 @@ class FakeLLM:
 
     Every input below is expected to be routed deterministically
     by the problem model, so the LLM fallback must never be
-    reached. Returning an empty plan makes an accidental fallback
-    fail loudly instead of silently passing.
+    reached. It raises rather than returning "{}": Planner.parse
+    turns "{}" into Action.ANSWER, a silent default that would let
+    a future routing regression pass unnoticed for any case whose
+    expectation happens to be "answer".
     """
 
     def chat(self, messages):
-        return "{}"
+        raise AssertionError(
+            "LLM planner fallback reached: routing is no "
+            "longer deterministic for this input"
+        )
 
 
 reconstructor = ProblemReconstructor()

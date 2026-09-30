@@ -128,8 +128,17 @@ class FileTool:
             "/"
         )
 
+        # basename(realpath(...)) breaks when agent/data is a
+        # symlink: the documented "data/x.txt" form then has to be
+        # spelled with the link target's name instead. Take the
+        # name from the UNRESOLVED directory.
+
         allowed_name = os.path.basename(
-            base
+            str(
+                self.ALLOWED_DIR
+            ).rstrip(
+                "/"
+            )
         )
 
         prefix = allowed_name + "/"
@@ -203,9 +212,27 @@ class FileTool:
 
         ):
 
+            # Report the path the caller asked for, not the
+            # resolved one: the absolute form leaked the host
+            # filesystem layout into the answer and into the
+            # evidence the model cites.
+
             raise FileNotFoundError(
 
-                target
+                f"Không tìm thấy file: {path!r}"
+
+            )
+
+
+        if not os.path.isfile(
+
+            target
+
+        ):
+
+            raise IsADirectoryError(
+
+                f"Không phải file: {path!r}"
 
             )
 

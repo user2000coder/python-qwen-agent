@@ -86,35 +86,64 @@ class Memory:
     def save(self):
 
 
-        HISTORY_DIR.mkdir(
+        # mkdir used the module-level HISTORY_DIR while the write
+        # used self.FILE, so overriding Memory.FILE created the
+        # wrong directory and then failed. Derive both from the
+        # same place.
 
-            parents=True,
-
-            exist_ok=True
-
-        )
-
-
-        with open(
-
-            self.FILE,
-
-            "w",
-
-            encoding="utf-8"
-
-        ) as f:
+        try:
 
 
-            json.dump(
+            self.FILE.parent.mkdir(
 
-                self.data,
+                parents=True,
 
-                f,
+                exist_ok=True
 
-                ensure_ascii=False,
+            )
 
-                indent=2
+
+            with open(
+
+                self.FILE,
+
+                "w",
+
+                encoding="utf-8"
+
+            ) as f:
+
+
+                json.dump(
+
+                    self.data,
+
+                    f,
+
+                    ensure_ascii=False,
+
+                    indent=2
+
+                )
+
+
+        except OSError:
+
+
+            # Runtime paths now live next to the source tree, so a
+            # read-only checkout (pip install, read-only mount,
+            # container image) would otherwise fail the very first
+            # question. Losing persistence is acceptable; refusing
+            # to answer is not.
+
+            LOGGER.warning(
+
+                "could not write %s; "
+                "conversation memory is not persisted",
+
+                self.FILE,
+
+                exc_info=True
 
             )
 

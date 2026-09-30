@@ -55,10 +55,10 @@ Mọi resource được phân giải theo thư mục nguồn (`agent/paths.py`),
 Cả hai suite đều offline — không gọi Ollama, không gọi network.
 
 ```bash
-python tests/test_evidence_verifier.py     # EvidenceVerifier
-python tests/test_regressions.py           # routing, paths, sandbox
-python tests/test_evidence_chain.py        # evidence chain end-to-end
-cd agent && python test_problem.py         # planner routing
+python tests/test_evidence_verifier.py     # EvidenceVerifier      14
+python tests/test_regressions.py           # routing, paths, sandbox 10
+python tests/test_evidence_chain.py        # evidence chain          11
+cd agent && python test_problem.py         # planner routing          6
 ```
 
 Ba suite trong `tests/` chạy được từ project root và tự thêm `agent/`
@@ -91,21 +91,32 @@ Planner ── ProblemReconstructor → ProblemClassifier
 
 Thứ tự routing trong `Planner.plan()`:
 
-1. Model-based (theo `ProblemType`) — gồm `FACT_LOOKUP → SEARCH`
+1. Model-based theo `ProblemType`: CALCULATION → MATHEMATICS → DEBUG →
+   CAUSAL → OPTIMIZATION → DECISION → DESIGN
 2. Deterministic: FILE → CALCULATOR → SEARCH → COMPLEX
-3. LLM planner fallback
+3. `FACT_LOOKUP → SEARCH`
+4. LLM planner fallback
 
-Model-based **phải** chạy trước keyword fallback, nếu không một câu
-`fact_lookup` chứa keyword "complex" (locking, transaction,
-concurrency…) sẽ bị route sang `COMPLEX` và trả lời bằng model memory
-thay vì đi lấy evidence.
+`FACT_LOOKUP → SEARCH` **phải** nằm sau `is_complex_reasoning()`.
+Classifier gán cùng type `fact_lookup` cho cả *"So sánh PostgreSQL và
+MySQL"* và *"PostgreSQL có hỗ trợ row locking không?"*, nên
+`ProblemType` một mình không phân biệt được so sánh với tra cứu năng
+lực. Đưa nhánh này lên trước sẽ hạ 7 câu reasoning thật (so sánh, ưu
+nhược điểm, phân tích rủi ro, kế hoạch migrate) xuống một lần web
+search duy nhất.
 
-Hai guard giữ cho tool không bị gọi sai:
+Ngược lại, `is_complex_reasoning()` **không** được coi *"X có hỗ trợ
+Y"* là reasoning — đó là tra cứu năng lực, trả lời được từ một trang
+tài liệu. Section "DATABASE / TECHNICAL FACT QUESTION" của nó bị vô
+hiệu hoá vì lý do đó.
+
+Ba guard giữ cho tool không bị gọi sai:
 
 | Guard | Ngăn điều gì |
 | --- | --- |
 | `is_arithmetic_expression()` | `"dân số Việt Nam bao nhiêu"` bị classify là CALCULATION → CalculatorTool nhận tiếng Việt → `invalid syntax` |
 | `extract_file_path()` allowlist extension | `sqlite.org`, `python 3.11.15`, URL bị nhận là file |
+| `is_polar_question()` veto từ hỏi + yêu cầu frame `có/đã/phải` | agent khẳng định **"Có"** cho câu không phải yes/no — `"sữa chua"` (chua ≠ chưa), `"hàng không"` / `"bằng không"` (không = zero), `Can Tho` / `Do dau` va vào trợ động từ tiếng Anh |
 
 ---
 
