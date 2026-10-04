@@ -2,8 +2,6 @@
 BCOS Ollama LLM Wrapper
 """
 
-import os
-
 import ollama
 
 from config import (
@@ -11,6 +9,8 @@ from config import (
     OLLAMA_HOST,
     TEMPERATURE
 )
+
+from paths import PROMPTS_DIR
 
 
 
@@ -39,24 +39,17 @@ class LLM:
     def load_prompt(self):
 
 
-        path = "prompts/bcos.txt"
+        path = PROMPTS_DIR / "bcos.txt"
 
 
-        if os.path.exists(path):
+        if path.exists():
 
 
-            with open(
-
-                path,
-
-                "r",
+            return path.read_text(
 
                 encoding="utf-8"
 
-            ) as f:
-
-
-                return f.read()
+            )
 
 
 
